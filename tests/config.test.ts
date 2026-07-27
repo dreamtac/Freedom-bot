@@ -15,6 +15,7 @@ describe("loadConfig", () => {
       clientId: "12345678901234567",
       guildId: "23456789012345678",
       newsPollIntervalMs: 300_000,
+      stockMasterRefreshIntervalMs: 86_400_000,
     });
   });
 
@@ -29,6 +30,7 @@ describe("loadConfig", () => {
       botToken: "test-token",
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
+      stockMasterRefreshIntervalMs: 86_400_000,
     });
   });
 
@@ -44,6 +46,7 @@ describe("loadConfig", () => {
       botToken: "test-token",
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
+      stockMasterRefreshIntervalMs: 86_400_000,
       kis: {
         appKey: "app-key",
         appSecret: "app-secret",

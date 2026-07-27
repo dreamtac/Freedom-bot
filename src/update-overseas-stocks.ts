@@ -9,6 +9,7 @@ import type {
   OverseasStockEntry,
 } from "./sources/overseas-stocks.js";
 import { StockStore } from "./storage/stock-store.js";
+import type { StockMasterSyncResult } from "./storage/stock-store.js";
 
 const OVERSEAS_MASTER_FILES: ReadonlyArray<{
   exchange: OverseasExchange;
@@ -32,10 +33,16 @@ if (isDirectExecution()) {
   await updateOverseasStocks();
 }
 
-export async function updateOverseasStocks(): Promise<void> {
+interface FetchLike {
+  (input: string | URL, init?: RequestInit): Promise<Response>;
+}
+
+export async function fetchOverseasStocks(
+  fetchImpl: FetchLike = globalThis.fetch,
+): Promise<OverseasStockEntry[]> {
   const batches = await Promise.all(
     OVERSEAS_MASTER_FILES.map(async ({ exchange, url }) => {
-      const response = await fetch(url);
+      const response = await fetchImpl(url);
       if (!response.ok) {
         throw new Error(
           exchange + " 미국 종목 목록 다운로드에 실패했습니다. (" + response.status + ")",
@@ -52,13 +59,19 @@ export async function updateOverseasStocks(): Promise<void> {
     throw new Error("미국 상장 종목 목록에서 가져온 종목이 없습니다.");
   }
 
+  return stocks;
+}
+
+export async function updateOverseasStocks(): Promise<StockMasterSyncResult> {
+  const stocks = await fetchOverseasStocks();
   const store = await StockStore.open(resolve(".data", "freedom-bot.sqlite"));
   try {
-    const result = store.importOverseasStocks(stocks, "kis-overseas-master");
+    const result = store.syncOverseasStocks(stocks, "kis-overseas-master");
     console.log(
-      "미국 상장 종목 " + stocks.length + "개를 SQLite에 저장했습니다. 현재 총 " +
-        result.total + "개입니다.",
+      "미국 상장 종목 동기화 완료: 추가 " + result.added + "개, 제외 " +
+        result.removed + "개, 현재 총 " + result.total + "개입니다.",
     );
+    return result;
   } finally {
     store.close();
   }

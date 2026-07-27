@@ -113,6 +113,66 @@ describe("StockStore", () => {
 
     store.close();
   });
+
+  it("국내·미국 종목 마스터 스냅샷에서 추가와 상장폐지를 반영한다", async () => {
+    const store = await createStore();
+
+    expect(
+      store.syncDomesticStocks(
+        [
+          { code: "111111", name: "국내 A", market: "유가증권" },
+          { code: "222222", name: "국내 B", market: "코스닥" },
+        ],
+        "krx-kind",
+      ),
+    ).toMatchObject({ added: 2, removed: 0, initial: true });
+    expect(
+      store.syncDomesticStocks(
+        [
+          { code: "222222", name: "국내 B", market: "코스닥" },
+          { code: "333333", name: "국내 C", market: "유가증권" },
+        ],
+        "krx-kind",
+      ),
+    ).toMatchObject({
+      added: 1,
+      removed: 1,
+      initial: false,
+      addedStocks: [{ code: "333333", name: "국내 C", market: "유가증권" }],
+      removedStocks: [{ code: "111111", name: "국내 A", market: "유가증권" }],
+    });
+    expect(() => store.resolve("국내 A")).toThrow("종목을 찾지 못했습니다.");
+    expect(store.resolve("333333")).toMatchObject({ name: "국내 C" });
+
+    expect(
+      store.syncOverseasStocks(
+        [
+          { symbol: "AAAA", exchange: "NAS", name: "미국 A" },
+          { symbol: "BBBB", exchange: "NYS", name: "미국 B" },
+        ],
+        "kis-overseas-master",
+      ),
+    ).toMatchObject({ added: 2, removed: 0, initial: true });
+    expect(
+      store.syncOverseasStocks(
+        [
+          { symbol: "BBBB", exchange: "NYS", name: "미국 B" },
+          { symbol: "CCCC", exchange: "AMS", name: "미국 C" },
+        ],
+        "kis-overseas-master",
+      ),
+    ).toMatchObject({
+      added: 1,
+      removed: 1,
+      initial: false,
+      addedStocks: [{ code: "CCCC", name: "미국 C", market: "AMS" }],
+      removedStocks: [{ code: "AAAA", name: "미국 A", market: "NAS" }],
+    });
+    expect(() => store.resolveOverseas("AAAA")).toThrow("미국 주식을 찾지 못했습니다.");
+    expect(store.resolveOverseas("CCCC")).toMatchObject({ name: "미국 C" });
+
+    store.close();
+  });
 });
 
 async function createStore(): Promise<StockStore> {

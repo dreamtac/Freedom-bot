@@ -90,6 +90,8 @@ npm run update:stocks
 npm run update:overseas-stocks
 ```
 
+봇은 시작 직후 국내·미국 종목 마스터를 동기화하고, 이후 기본 24시간마다 같은 작업을 반복합니다. 새 상장 또는 상장폐지로 검색 목록이 바뀌면 설정된 알림 채널에 추가·제외 종목명과 코드를 요약해 보냅니다. 갱신 주기는 `STOCK_MASTER_REFRESH_INTERVAL_MS`로 조절할 수 있습니다.
+
 SQLite는 애플리케이션에 포함된 드라이버를 사용하므로 운영체제에 별도로 설치할 필요가 없습니다.
 
 ## Windows 미니PC 실행

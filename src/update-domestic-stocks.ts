@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import { StockStore } from "./storage/stock-store.js";
 import type { DomesticStockEntry } from "./sources/domestic-stocks.js";
+import type { StockMasterSyncResult } from "./storage/stock-store.js";
 
 const KRX_LISTED_COMPANIES_URL =
   "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13";
@@ -11,8 +12,14 @@ if (isDirectExecution()) {
   await updateDomesticStocks();
 }
 
-export async function updateDomesticStocks(): Promise<void> {
-  const response = await fetch(KRX_LISTED_COMPANIES_URL);
+interface FetchLike {
+  (input: string | URL, init?: RequestInit): Promise<Response>;
+}
+
+export async function fetchDomesticStocks(
+  fetchImpl: FetchLike = globalThis.fetch,
+): Promise<DomesticStockEntry[]> {
+  const response = await fetchImpl(KRX_LISTED_COMPANIES_URL);
   if (!response.ok) {
     throw new Error(`상장 종목 목록 다운로드에 실패했습니다. (${response.status})`);
   }
@@ -26,12 +33,18 @@ export async function updateDomesticStocks(): Promise<void> {
     throw new Error("상장 종목 목록에서 가져온 종목이 없습니다.");
   }
 
+  return stocks;
+}
+
+export async function updateDomesticStocks(): Promise<StockMasterSyncResult> {
+  const stocks = await fetchDomesticStocks();
   const store = await StockStore.open(resolve(".data", "freedom-bot.sqlite"));
   try {
-    const result = store.importStocks(stocks, "krx-kind");
+    const result = store.syncDomesticStocks(stocks, "krx-kind");
     console.log(
-      `국내 상장 종목 ${stocks.length}개를 SQLite에 저장했습니다. 현재 총 ${result.total}개입니다.`,
+      `국내 상장 종목 동기화 완료: 추가 ${result.added}개, 제외 ${result.removed}개, 현재 총 ${result.total}개입니다.`,
     );
+    return result;
   } finally {
     store.close();
   }

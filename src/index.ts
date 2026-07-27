@@ -12,6 +12,7 @@ import { commandsByName } from "./commands/index.js";
 import { loadConfig } from "./config.js";
 import { NewsMonitor } from "./monitor/news-monitor.js";
 import { PriceAlertMonitor } from "./monitor/price-alert-monitor.js";
+import { StockMasterMonitor } from "./monitor/stock-master-monitor.js";
 import { KisClient } from "./sources/kis.js";
 import { KisRealtimeClient } from "./sources/kis-realtime.js";
 import { PriceAlertStore } from "./storage/price-alert-store.js";
@@ -44,6 +45,13 @@ async function startBot(): Promise<void> {
           store: priceAlertStore,
         })
       : undefined;
+  const stockMasterMonitor = new StockMasterMonitor({
+    store: stockStore,
+    intervalMs: config.stockMasterRefreshIntervalMs,
+    ...(config.notificationChannelId
+      ? { client, channelId: config.notificationChannelId }
+      : {}),
+  });
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`${readyClient.user.tag}로 로그인했습니다.`);
@@ -54,12 +62,11 @@ async function startBot(): Promise<void> {
             ? "봇이 Discord 서버에 Guild Install 되어 있지 않습니다. 서버용 설치 링크로 봇을 추가해 주세요."
             : "설정된 알림 채널을 볼 수 없습니다. 채널 ID와 봇의 채널 보기 권한을 확인해 주세요.",
         );
-        return;
+      } else {
+        void newsMonitor.start().catch((error: unknown) => {
+          console.error("공지 모니터를 시작하지 못했습니다.", error);
+        });
       }
-
-      void newsMonitor.start().catch((error: unknown) => {
-        console.error("공지 모니터를 시작하지 못했습니다.", error);
-      });
     }
     if (priceAlertMonitor) {
       priceAlertMonitor.start();
@@ -70,6 +77,7 @@ async function startBot(): Promise<void> {
     } else if (!config.kis) {
       console.log("KIS API 키가 없어 실시간 주가 알림은 비활성화되었습니다.");
     }
+    stockMasterMonitor.start();
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -131,6 +139,7 @@ async function startBot(): Promise<void> {
     console.log(`${signal} 신호를 받아 봇을 종료합니다.`);
     newsMonitor?.stop();
     priceAlertMonitor?.stop();
+    stockMasterMonitor.stop();
     priceAlertStore.close();
     stockStore.close();
     client.destroy();

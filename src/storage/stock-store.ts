@@ -52,6 +52,21 @@ export interface OverseasStockImportResult {
   total: number;
 }
 
+export interface StockMasterSyncResult {
+  added: number;
+  removed: number;
+  total: number;
+  initial: boolean;
+  addedStocks: readonly StockMasterChange[];
+  removedStocks: readonly StockMasterChange[];
+}
+
+export interface StockMasterChange {
+  code: string;
+  name: string;
+  market?: string;
+}
+
 export class StockStore {
   readonly #database: Database.Database;
 
@@ -90,8 +105,8 @@ export class StockStore {
   importStocks(
     stocks: readonly DomesticStockEntry[],
     source = "manual",
+    updatedAt = Date.now(),
   ): DomesticStockImportResult {
-    const now = Date.now();
     const stockStatement = this.#database.prepare(`
       INSERT INTO domestic_stocks (
         code, name, normalized_name, market, source, updated_at
@@ -129,7 +144,7 @@ export class StockStore {
           normalizedName: normalizeStockName(stock.name),
           market: stock.market ?? null,
           source,
-          updatedAt: now,
+          updatedAt,
         });
         insertedOrUpdated += result.changes;
         deleteAliasStatement.run(stock.code);
@@ -154,8 +169,8 @@ export class StockStore {
   importOverseasStocks(
     stocks: readonly OverseasStockEntry[],
     source = "manual",
+    updatedAt = Date.now(),
   ): OverseasStockImportResult {
-    const now = Date.now();
     const stockStatement = this.#database.prepare(`
       INSERT INTO overseas_stocks (
         symbol, exchange, name, normalized_name, source, updated_at
@@ -192,7 +207,7 @@ export class StockStore {
           name: stock.name,
           normalizedName: normalizeStockName(stock.name),
           source,
-          updatedAt: now,
+          updatedAt,
         });
         insertedOrUpdated += result.changes;
         deleteAliasStatement.run(stock.symbol, stock.exchange);
@@ -209,6 +224,102 @@ export class StockStore {
     transaction();
 
     return { insertedOrUpdated, total: this.countOverseas() };
+  }
+
+  syncDomesticStocks(
+    stocks: readonly DomesticStockEntry[],
+    source: string,
+  ): StockMasterSyncResult {
+    const existingRows =
+      (this.#database
+        .prepare("SELECT code, name, market, updated_at FROM domestic_stocks WHERE source = ?")
+        .all(source) as Array<{
+          code: string;
+          name: string;
+          market: string | null;
+          updated_at: number;
+        }>);
+    const updatedAt = getNextSyncTimestamp(existingRows.map((row) => row.updated_at));
+    const existingCodes = new Set(existingRows.map((row) => row.code));
+    const incomingStocks = new Map(
+      stocks
+        .filter((stock) => /^\d{6}$/.test(stock.code))
+        .map((stock) => [stock.code, stock] as const),
+    );
+    const initial = existingCodes.size === 0;
+    const addedStocks = [...incomingStocks]
+      .filter(([code]) => !existingCodes.has(code))
+      .map(([code, stock]) => toStockMasterChange(code, stock.name, stock.market));
+    const removedStocks = existingRows
+      .filter((stock) => !incomingStocks.has(stock.code))
+      .map((stock) => toStockMasterChange(stock.code, stock.name, stock.market ?? undefined));
+    let removed = 0;
+
+    const transaction = this.#database.transaction(() => {
+      this.importStocks(stocks, source, updatedAt);
+      removed = this.#database
+        .prepare("DELETE FROM domestic_stocks WHERE source = ? AND updated_at < ?")
+        .run(source, updatedAt).changes;
+    });
+    transaction();
+
+    return {
+      added: addedStocks.length,
+      removed,
+      total: this.count(),
+      initial,
+      addedStocks,
+      removedStocks,
+    };
+  }
+
+  syncOverseasStocks(
+    stocks: readonly OverseasStockEntry[],
+    source: string,
+  ): StockMasterSyncResult {
+    const existingRows =
+      (this.#database
+        .prepare("SELECT symbol, exchange, name, updated_at FROM overseas_stocks WHERE source = ?")
+        .all(source) as Array<{
+          symbol: string;
+          exchange: OverseasExchange;
+          name: string;
+          updated_at: number;
+        }>);
+    const updatedAt = getNextSyncTimestamp(existingRows.map((row) => row.updated_at));
+    const existingKeys = new Set(
+      existingRows.map((row) => `${row.exchange}:${row.symbol}`),
+    );
+    const incomingStocks = new Map(
+      stocks
+        .filter((stock) => /^[A-Z][A-Z0-9.-]{0,9}$/.test(stock.symbol))
+        .map((stock) => [`${stock.exchange}:${stock.symbol}`, stock] as const),
+    );
+    const initial = existingKeys.size === 0;
+    const addedStocks = [...incomingStocks]
+      .filter(([key]) => !existingKeys.has(key))
+      .map(([, stock]) => toStockMasterChange(stock.symbol, stock.name, stock.exchange));
+    const removedStocks = existingRows
+      .filter((stock) => !incomingStocks.has(`${stock.exchange}:${stock.symbol}`))
+      .map((stock) => toStockMasterChange(stock.symbol, stock.name, stock.exchange));
+    let removed = 0;
+
+    const transaction = this.#database.transaction(() => {
+      this.importOverseasStocks(stocks, source, updatedAt);
+      removed = this.#database
+        .prepare("DELETE FROM overseas_stocks WHERE source = ? AND updated_at < ?")
+        .run(source, updatedAt).changes;
+    });
+    transaction();
+
+    return {
+      added: addedStocks.length,
+      removed,
+      total: this.countOverseas(),
+      initial,
+      addedStocks,
+      removedStocks,
+    };
   }
 
   resolve(query: string): DomesticStockMatch {
@@ -619,4 +730,24 @@ function formatOverseasSuggestions(stocks: readonly OverseasStockRow[]): string 
 
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+function toStockMasterChange(
+  code: string,
+  name: string,
+  market: string | undefined,
+): StockMasterChange {
+  return {
+    code,
+    name,
+    ...(market ? { market } : {}),
+  };
+}
+
+function getNextSyncTimestamp(existingTimestamps: readonly number[]): number {
+  const latestTimestamp = existingTimestamps.reduce(
+    (latest, timestamp) => Math.max(latest, timestamp),
+    0,
+  );
+  return Math.max(Date.now(), latestTimestamp + 1);
 }
