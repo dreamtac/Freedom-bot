@@ -13,9 +13,13 @@ const DOMESTIC_NEWS_TITLE_PATH =
   "/uapi/domestic-stock/v1/quotations/news-title";
 const DOMESTIC_INVESTOR_PATH =
   "/uapi/domestic-stock/v1/quotations/inquire-investor";
+const DOMESTIC_INDEX_PRICE_PATH =
+  "/uapi/domestic-stock/v1/quotations/inquire-index-price";
 const OVERSEAS_QUOTE_PATH = "/uapi/overseas-price/v1/quotations/price";
 const OVERSEAS_DAILY_PRICE_PATH =
   "/uapi/overseas-price/v1/quotations/dailyprice";
+const OVERSEAS_INDEX_PRICE_PATH =
+  "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice";
 const FUTURES_QUOTE_PATH =
   "/uapi/domestic-futureoption/v1/quotations/inquire-price";
 const TOKEN_PATH = "/oauth2/tokenP";
@@ -70,6 +74,23 @@ export interface KisOverseasQuote {
   previousClose?: number;
   volume?: number;
   amount?: number;
+  requestedAt: Date;
+}
+
+export interface KisIndexQuote {
+  code: string;
+  market: "domestic" | "overseas";
+  price: number;
+  change: number;
+  changeRate: number;
+  changeDirection: "up" | "down" | "flat";
+  previousClose?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  advancingIssues?: number;
+  flatIssues?: number;
+  decliningIssues?: number;
   requestedAt: Date;
 }
 
@@ -240,6 +261,54 @@ export class KisClient {
     return parseDomesticInvestorFlow(output);
   }
 
+  async fetchDomesticIndexQuote(code: string): Promise<KisIndexQuote> {
+    const normalizedCode = normalizeDomesticIndexCode(code);
+    const accessToken = await this.getAccessToken();
+    const url = new URL(DOMESTIC_INDEX_PRICE_PATH, this.config.baseUrl);
+    url.searchParams.set("FID_COND_MRKT_DIV_CODE", "U");
+    url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
+
+    const response = await this.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        appkey: this.config.appKey,
+        appsecret: this.config.appSecret,
+        tr_id: "FHPUP02100000",
+        custtype: "P",
+      },
+    });
+
+    const data = await readJsonResponse(response, "국내 지수 조회");
+    assertKisSuccess(data, "국내 지수 조회");
+    return parseDomesticIndexQuote(normalizedCode, asRecord(data.output));
+  }
+
+  async fetchOverseasIndexQuote(code: string): Promise<KisIndexQuote> {
+    const normalizedCode = normalizeOverseasIndexCode(code);
+    const accessToken = await this.getAccessToken();
+    const url = new URL(OVERSEAS_INDEX_PRICE_PATH, this.config.baseUrl);
+    url.searchParams.set("FID_COND_MRKT_DIV_CODE", "N");
+    url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
+    url.searchParams.set("FID_HOUR_CLS_CODE", "0");
+    url.searchParams.set("FID_PW_DATA_INCU_YN", "Y");
+
+    const response = await this.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        appkey: this.config.appKey,
+        appsecret: this.config.appSecret,
+        tr_id: "FHKST03030200",
+        custtype: "P",
+      },
+    });
+
+    const data = await readJsonResponse(response, "해외 지수 조회");
+    assertKisSuccess(data, "해외 지수 조회");
+    return parseOverseasIndexQuote(normalizedCode, asRecord(data.output1));
+  }
+
   async fetchOverseasQuote(
     symbol: string,
     exchange: OverseasExchange,
@@ -371,6 +440,22 @@ export function normalizeDomesticStockCode(code: string): string {
   return normalizedCode;
 }
 
+export function normalizeDomesticIndexCode(code: string): string {
+  const normalizedCode = code.trim();
+  if (!/^\d{4}$/.test(normalizedCode)) {
+    throw new KisApiError("국내 지수 코드는 4자리 숫자여야 합니다.");
+  }
+  return normalizedCode;
+}
+
+export function normalizeOverseasIndexCode(code: string): string {
+  const normalizedCode = code.trim().toUpperCase();
+  if (!/^[.A-Z][.A-Z0-9-]{0,9}$/.test(normalizedCode)) {
+    throw new KisApiError("해외 지수 코드 형식이 올바르지 않습니다.");
+  }
+  return normalizedCode;
+}
+
 export function normalizeFuturesCode(code: string): string {
   const normalizedCode = code.trim().toUpperCase();
   if (!/^[A-Z0-9]{6,9}$/.test(normalizedCode)) {
@@ -441,6 +526,45 @@ function parseDomesticQuote(
     ...(low !== undefined ? { low } : {}),
     ...(volume !== undefined ? { volume } : {}),
     ...(amount !== undefined ? { amount } : {}),
+    requestedAt: new Date(),
+  };
+}
+
+function parseDomesticIndexQuote(
+  code: string,
+  output: Record<string, unknown>,
+): KisIndexQuote {
+  const rawChange = readOptionalNumber(output, "bstp_nmix_prdy_vrss") ?? 0;
+  const rawChangeRate = readOptionalNumber(output, "bstp_nmix_prdy_ctrt") ?? 0;
+  const changeDirection = parseOverseasChangeDirection(
+    readOptionalString(output, "prdy_vrss_sign"),
+    rawChange,
+    rawChangeRate,
+  );
+  const multiplier =
+    changeDirection === "up" ? 1 : changeDirection === "down" ? -1 : 0;
+  const previousClose = readOptionalNumber(output, "prdy_clpr");
+  const open = readOptionalNumber(output, "bstp_nmix_oprc");
+  const high = readOptionalNumber(output, "bstp_nmix_hgpr");
+  const low = readOptionalNumber(output, "bstp_nmix_lwpr");
+  const advancingIssues = readOptionalNumber(output, "ascn_issu_cnt");
+  const flatIssues = readOptionalNumber(output, "stnr_issu_cnt");
+  const decliningIssues = readOptionalNumber(output, "down_issu_cnt");
+
+  return {
+    code,
+    market: "domestic",
+    price: readNumber(output, "bstp_nmix_prpr"),
+    change: Math.abs(rawChange) * multiplier,
+    changeRate: Math.abs(rawChangeRate) * multiplier,
+    changeDirection,
+    ...(previousClose !== undefined ? { previousClose } : {}),
+    ...(open !== undefined ? { open } : {}),
+    ...(high !== undefined ? { high } : {}),
+    ...(low !== undefined ? { low } : {}),
+    ...(advancingIssues !== undefined ? { advancingIssues } : {}),
+    ...(flatIssues !== undefined ? { flatIssues } : {}),
+    ...(decliningIssues !== undefined ? { decliningIssues } : {}),
     requestedAt: new Date(),
   };
 }
@@ -534,6 +658,39 @@ function parseOverseasQuote(
     ...(previousClose !== undefined ? { previousClose } : {}),
     ...(volume !== undefined ? { volume } : {}),
     ...(amount !== undefined ? { amount } : {}),
+    requestedAt: new Date(),
+  };
+}
+
+function parseOverseasIndexQuote(
+  code: string,
+  output: Record<string, unknown>,
+): KisIndexQuote {
+  const rawChange = readOptionalNumber(output, "ovrs_nmix_prdy_vrss") ?? 0;
+  const rawChangeRate = readOptionalNumber(output, "prdy_ctrt") ?? 0;
+  const changeDirection = parseOverseasChangeDirection(
+    readOptionalString(output, "prdy_vrss_sign"),
+    rawChange,
+    rawChangeRate,
+  );
+  const multiplier =
+    changeDirection === "up" ? 1 : changeDirection === "down" ? -1 : 0;
+  const previousClose = readOptionalNumber(output, "ovrs_nmix_prdy_clpr");
+  const open = readOptionalNumber(output, "ovrs_prod_oprc");
+  const high = readOptionalNumber(output, "ovrs_prod_hgpr");
+  const low = readOptionalNumber(output, "ovrs_prod_lwpr");
+
+  return {
+    code,
+    market: "overseas",
+    price: readNumber(output, "ovrs_nmix_prpr"),
+    change: Math.abs(rawChange) * multiplier,
+    changeRate: Math.abs(rawChangeRate) * multiplier,
+    changeDirection,
+    ...(previousClose !== undefined ? { previousClose } : {}),
+    ...(open !== undefined ? { open } : {}),
+    ...(high !== undefined ? { high } : {}),
+    ...(low !== undefined ? { low } : {}),
     requestedAt: new Date(),
   };
 }

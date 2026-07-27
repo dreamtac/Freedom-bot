@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   KisClient,
+  normalizeDomesticIndexCode,
   normalizeDomesticStockCode,
   normalizeFuturesCode,
+  normalizeOverseasIndexCode,
 } from "../src/sources/kis.js";
 
 describe("normalizeDomesticStockCode", () => {
@@ -14,6 +16,22 @@ describe("normalizeDomesticStockCode", () => {
   it("잘못된 국내 종목코드는 거부한다", () => {
     expect(() => normalizeDomesticStockCode("AAPL")).toThrow(
       "국내 주식 종목코드는 6자리 숫자여야 합니다.",
+    );
+  });
+});
+
+describe("지수 코드 정규화", () => {
+  it("국내와 해외 지수 코드를 정규화한다", () => {
+    expect(normalizeDomesticIndexCode("0001")).toBe("0001");
+    expect(normalizeOverseasIndexCode("spx")).toBe("SPX");
+  });
+
+  it("잘못된 지수 코드는 거부한다", () => {
+    expect(() => normalizeDomesticIndexCode("KOSPI")).toThrow(
+      "국내 지수 코드는 4자리 숫자여야 합니다.",
+    );
+    expect(() => normalizeOverseasIndexCode("S&P500")).toThrow(
+      "해외 지수 코드 형식이 올바르지 않습니다.",
     );
   });
 });
@@ -357,6 +375,90 @@ describe("KisClient", () => {
     expect(requests[1]?.url).toContain("FID_COND_MRKT_DIV_CODE=CM");
     expect(requests[1]?.url).toContain("FID_INPUT_ISCD=1A01609");
     expect(requests[1]?.init?.headers).toMatchObject({ tr_id: "FHMIF10000000" });
+  });
+
+  it("국내와 해외 주요 지수 시세를 조회한다", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+      const url = input.toString();
+      requests.push({ url, init });
+      if (url.endsWith("/oauth2/tokenP")) {
+        return Response.json({ access_token: "index-token", expires_in: 3600 });
+      }
+      if (url.includes("inquire-index-price")) {
+        return Response.json({
+          rt_cd: "0",
+          output: {
+            bstp_nmix_prpr: "3200.51",
+            bstp_nmix_prdy_vrss: "18.42",
+            prdy_vrss_sign: "2",
+            bstp_nmix_prdy_ctrt: "0.58",
+            bstp_nmix_oprc: "3190.00",
+            bstp_nmix_hgpr: "3210.00",
+            bstp_nmix_lwpr: "3180.00",
+            ascn_issu_cnt: "520",
+            stnr_issu_cnt: "42",
+            down_issu_cnt: "330",
+          },
+        });
+      }
+      return Response.json({
+        rt_cd: "0",
+        output1: {
+          ovrs_nmix_prpr: "6345.67",
+          ovrs_nmix_prdy_vrss: "10.45",
+          prdy_vrss_sign: "5",
+          prdy_ctrt: "-0.16",
+          ovrs_nmix_prdy_clpr: "6356.12",
+          ovrs_prod_oprc: "6350.00",
+          ovrs_prod_hgpr: "6360.00",
+          ovrs_prod_lwpr: "6330.00",
+        },
+      });
+    };
+    const client = new KisClient(
+      {
+        appKey: "index-app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+      },
+      fetchImpl,
+    );
+
+    await expect(client.fetchDomesticIndexQuote("0001")).resolves.toMatchObject({
+      code: "0001",
+      market: "domestic",
+      price: 3200.51,
+      change: 18.42,
+      changeRate: 0.58,
+      changeDirection: "up",
+      open: 3190,
+      advancingIssues: 520,
+      flatIssues: 42,
+      decliningIssues: 330,
+    });
+    await expect(client.fetchOverseasIndexQuote("spx")).resolves.toMatchObject({
+      code: "SPX",
+      market: "overseas",
+      price: 6345.67,
+      change: -10.45,
+      changeRate: -0.16,
+      changeDirection: "down",
+      previousClose: 6356.12,
+    });
+
+    expect(requests[1]?.url).toContain(
+      "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+    );
+    expect(requests[1]?.url).toContain("FID_COND_MRKT_DIV_CODE=U");
+    expect(requests[1]?.url).toContain("FID_INPUT_ISCD=0001");
+    expect(requests[1]?.init?.headers).toMatchObject({ tr_id: "FHPUP02100000" });
+    expect(requests[2]?.url).toContain(
+      "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice",
+    );
+    expect(requests[2]?.url).toContain("FID_COND_MRKT_DIV_CODE=N");
+    expect(requests[2]?.url).toContain("FID_INPUT_ISCD=SPX");
+    expect(requests[2]?.init?.headers).toMatchObject({ tr_id: "FHKST03030200" });
   });
 
   it("종목별 최근 뉴스 제목을 조회한다", async () => {
