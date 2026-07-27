@@ -2,21 +2,23 @@ import type { Client } from "discord.js";
 
 import { sendNewsPost } from "../notifications/discord-news.js";
 import { fetchEndfieldNews } from "../sources/endfield.js";
-import type { NewsPost } from "../sources/types.js";
-import { SeenPostStore } from "../storage/seen-post-store.js";
+import { NewsStore } from "../storage/news-store.js";
 
 export interface NewsMonitorOptions {
   client: Client;
   channelId: string;
   intervalMs: number;
-  storePath: string;
+  databasePath: string;
+  legacyStorePath: string;
 }
 
 export class NewsMonitor {
   readonly #client: Client;
   readonly #channelId: string;
   readonly #intervalMs: number;
-  readonly #store: SeenPostStore;
+  readonly #databasePath: string;
+  readonly #legacyStorePath: string;
+  #store: NewsStore | undefined;
   #timer: NodeJS.Timeout | undefined;
   #stopped = true;
 
@@ -24,7 +26,8 @@ export class NewsMonitor {
     this.#client = options.client;
     this.#channelId = options.channelId;
     this.#intervalMs = options.intervalMs;
-    this.#store = new SeenPostStore(options.storePath);
+    this.#databasePath = options.databasePath;
+    this.#legacyStorePath = options.legacyStorePath;
   }
 
   async start(): Promise<void> {
@@ -33,7 +36,11 @@ export class NewsMonitor {
     }
 
     this.#stopped = false;
-    await this.#store.load();
+    this.#store = await NewsStore.open(this.#databasePath);
+    const imported = await this.#store.importLegacyJson(this.#legacyStorePath);
+    if (imported > 0) {
+      console.log(`기존 JSON 공지 ID ${imported}개를 SQLite로 이전했습니다.`);
+    }
     await this.#runAndSchedule();
   }
 
@@ -43,6 +50,8 @@ export class NewsMonitor {
       clearTimeout(this.#timer);
       this.#timer = undefined;
     }
+    this.#store?.close();
+    this.#store = undefined;
   }
 
   async #runAndSchedule(): Promise<void> {
@@ -62,31 +71,31 @@ export class NewsMonitor {
 
   async checkNow(): Promise<void> {
     const posts = await fetchEndfieldNews();
+    const store = this.#getStore();
 
-    if (this.#store.isEmpty()) {
-      await this.#store.add(posts.map((post) => post.id));
+    if (store.count() === 0) {
+      store.upsert(posts, true);
       console.log(`기존 엔드필드 공지 ${posts.length}개를 기준 데이터로 저장했습니다.`);
       return;
     }
 
-    const unseenPosts = findUnseenPosts(posts, (id) => this.#store.has(id));
-    for (const post of unseenPosts) {
+    store.upsert(posts);
+    const pendingPosts = store.getPending("endfield");
+    for (const post of pendingPosts) {
       await sendNewsPost(this.#client, this.#channelId, post);
-      await this.#store.add([post.id]);
+      store.markNotified(post.id);
       console.log(`새 공지를 전송했습니다: ${post.title}`);
     }
 
-    if (unseenPosts.length === 0) {
+    if (pendingPosts.length === 0) {
       console.log("새로운 엔드필드 공지가 없습니다.");
     }
   }
-}
 
-export function findUnseenPosts(
-  posts: readonly NewsPost[],
-  hasSeen: (id: string) => boolean,
-): NewsPost[] {
-  return posts
-    .filter((post) => !hasSeen(post.id))
-    .sort((left, right) => left.publishedAt.getTime() - right.publishedAt.getTime());
+  #getStore(): NewsStore {
+    if (!this.#store) {
+      throw new Error("공지 데이터베이스가 열려 있지 않습니다.");
+    }
+    return this.#store;
+  }
 }

@@ -26,18 +26,58 @@ const responseSchema = z.object({
 
 export interface FetchEndfieldOptions {
   fetcher?: typeof fetch;
+  page?: number;
   pageSize?: number;
 }
 
 export async function fetchEndfieldNews(
   options: FetchEndfieldOptions = {},
 ): Promise<NewsPost[]> {
+  return (await fetchEndfieldNewsPage(options)).posts;
+}
+
+export async function fetchAllEndfieldNews(
+  options: FetchEndfieldOptions = {},
+): Promise<NewsPost[]> {
+  const pageSize = options.pageSize ?? 20;
+  const firstPage = await fetchEndfieldNewsPage({
+    ...options,
+    page: 1,
+    pageSize,
+  });
+  const posts = [...firstPage.posts];
+  const totalPages = Math.ceil(firstPage.total / pageSize);
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    const nextPage = await fetchEndfieldNewsPage({
+      ...options,
+      page,
+      pageSize,
+    });
+    if (nextPage.posts.length === 0) {
+      break;
+    }
+    posts.push(...nextPage.posts);
+  }
+
+  return posts;
+}
+
+interface EndfieldNewsPage {
+  posts: NewsPost[];
+  total: number;
+}
+
+async function fetchEndfieldNewsPage(
+  options: FetchEndfieldOptions = {},
+): Promise<EndfieldNewsPage> {
   const fetcher = options.fetcher ?? fetch;
+  const page = options.page ?? 1;
   const pageSize = options.pageSize ?? 20;
   const url = new URL(API_URL);
   url.searchParams.set("lang", "ko-kr");
   url.searchParams.set("code", APP_CODE);
-  url.searchParams.set("page", "1");
+  url.searchParams.set("page", String(page));
   url.searchParams.set("pageSize", String(pageSize));
 
   const response = await fetcher(url, {
@@ -57,16 +97,20 @@ export async function fetchEndfieldNews(
     throw new Error(`엔드필드 CMS 오류 코드: ${parsed.code}`);
   }
 
-  return parsed.data.list
-    .filter((bulletin) => !HIDDEN_BULLETIN_IDS.has(bulletin.cid))
-    .map((bulletin) => ({
-      id: `endfield:${bulletin.cid}`,
-      source: "명일방주: 엔드필드",
-      category: bulletin.tab,
-      title: bulletin.title,
-      summary: bulletin.brief,
-      publishedAt: new Date(bulletin.displayTime * 1_000),
-      url: `${SITE_URL}/${bulletin.cid}`,
-      ...(bulletin.cover ? { imageUrl: bulletin.cover } : {}),
-    }));
+  return {
+    posts: parsed.data.list
+      .filter((bulletin) => !HIDDEN_BULLETIN_IDS.has(bulletin.cid))
+      .map((bulletin) => ({
+        id: `endfield:${bulletin.cid}`,
+        sourceKey: "endfield",
+        source: "명일방주: 엔드필드",
+        category: bulletin.tab,
+        title: bulletin.title,
+        summary: bulletin.brief,
+        publishedAt: new Date(bulletin.displayTime * 1_000),
+        url: `${SITE_URL}/${bulletin.cid}`,
+        ...(bulletin.cover ? { imageUrl: bulletin.cover } : {}),
+      })),
+    total: parsed.data.total,
+  };
 }

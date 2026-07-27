@@ -19,7 +19,36 @@ const configSchema = z.object({
     (value) => (value === "" || value === undefined ? 300_000 : value),
     z.coerce.number().int().min(60_000).max(86_400_000),
   ),
+  KIS_APP_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  KIS_APP_SECRET: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  KIS_BASE_URL: z.preprocess(
+    (value) =>
+      value === "" || value === undefined
+        ? "https://openapi.koreainvestment.com:9443"
+        : value,
+    z.string().url(),
+  ),
+  KIS_WS_URL: z.preprocess(
+    (value) =>
+      value === "" || value === undefined
+        ? "ws://ops.koreainvestment.com:21000"
+        : value,
+    z.string().url(),
+  ),
 });
+
+export interface KisConfig {
+  appKey: string;
+  appSecret: string;
+  baseUrl: string;
+  websocketUrl: string;
+}
 
 export interface AppConfig {
   botToken: string;
@@ -27,6 +56,7 @@ export interface AppConfig {
   guildId?: string;
   notificationChannelId?: string;
   newsPollIntervalMs: number;
+  kis?: KisConfig;
 }
 
 export function loadConfig(
@@ -39,6 +69,15 @@ export function loadConfig(
     throw new Error(`환경변수 설정을 확인해 주세요:\n${messages}`);
   }
 
+  if (
+    (result.data.KIS_APP_KEY && !result.data.KIS_APP_SECRET) ||
+    (!result.data.KIS_APP_KEY && result.data.KIS_APP_SECRET)
+  ) {
+    throw new Error(
+      "환경변수 설정을 확인해 주세요:\nKIS_APP_KEY와 KIS_APP_SECRET은 함께 설정해야 합니다.",
+    );
+  }
+
   return {
     botToken: result.data.DISCORD_BOT_TOKEN,
     clientId: result.data.DISCORD_CLIENT_ID,
@@ -49,5 +88,15 @@ export function loadConfig(
       ? { notificationChannelId: result.data.DISCORD_NOTIFICATION_CHANNEL_ID }
       : {}),
     newsPollIntervalMs: result.data.NEWS_POLL_INTERVAL_MS,
+    ...(result.data.KIS_APP_KEY && result.data.KIS_APP_SECRET
+      ? {
+          kis: {
+            appKey: result.data.KIS_APP_KEY,
+            appSecret: result.data.KIS_APP_SECRET,
+            baseUrl: result.data.KIS_BASE_URL,
+            websocketUrl: result.data.KIS_WS_URL,
+          },
+        }
+      : {}),
   };
 }

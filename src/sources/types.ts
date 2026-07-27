@@ -1,5 +1,6 @@
 export interface NewsPost {
   id: string;
+  sourceKey: string;
   source: string;
   category: string;
   title: string;

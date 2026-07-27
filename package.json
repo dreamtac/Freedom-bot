@@ -5,24 +5,33 @@
   "description": "Discord bot for game news notifications",
   "type": "module",
   "scripts": {
+    "preinstall": "node scripts/check-node-version.mjs",
+    "predev": "node scripts/check-node-version.mjs",
     "dev": "tsx watch src/index.ts",
+    "prestart": "node scripts/check-node-version.mjs",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "check:news": "tsx src/check-news.ts",
+    "list:news": "tsx src/list-news.ts",
+    "update:stocks": "tsx src/update-domestic-stocks.ts",
+    "update:overseas-stocks": "tsx src/update-overseas-stocks.ts",
     "register:commands": "tsx src/register-commands.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "engines": {
-    "node": ">=20.18.0"
+    "node": "24.x"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
+    "fflate": "^0.8.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^20.17.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"

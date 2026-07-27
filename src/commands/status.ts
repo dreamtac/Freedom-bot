@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from "discord.js";
+import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { BotCommand } from "./types.js";
 
@@ -10,7 +10,7 @@ export const statusCommand: BotCommand = {
   async execute(interaction) {
     await interaction.reply({
       content: `정상 작동 중입니다. 응답 시간: ${interaction.client.ws.ping}ms`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   },
 };
