@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import type { OverseasExchange } from "../sources/overseas-stocks.js";
 
 export const MAX_PRICE_ALERT_STOCKS = 40;
+export const MAX_PRICE_ALERT_STOCKS_WITH_NIGHT_FUTURES = MAX_PRICE_ALERT_STOCKS - 1;
 export const PRICE_ALERT_THRESHOLDS = [3, 5, 8, 10] as const;
 export const NIGHT_FUTURES_ALERT_THRESHOLDS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 
@@ -24,6 +25,11 @@ export interface PriceAlertEvent {
   tradingDate: string;
   direction: PriceAlertDirection;
   threshold: number;
+}
+
+export interface NxtClosingPrice {
+  tradingDate: string;
+  price: number;
 }
 
 interface PriceAlertStockRow {
@@ -63,9 +69,12 @@ export class PriceAlertStore {
   }
 
   add(stock: Omit<PriceAlertStock, "createdAt">): boolean {
-    if (!this.isRegistered(stock.code) && this.count() >= MAX_PRICE_ALERT_STOCKS) {
+    const maximumStocks = this.getMaximumStockAlerts();
+    if (!this.isRegistered(stock.code) && this.count() >= maximumStocks) {
       throw new Error(
-        `실시간 주가 알림은 최대 ${MAX_PRICE_ALERT_STOCKS}종목까지 등록할 수 있습니다.`,
+        this.isNightFuturesAlertEnabled()
+          ? `야간선물 알림이 켜져 있어 실시간 주가 알림은 최대 ${maximumStocks}종목까지 등록할 수 있습니다.`
+          : `실시간 주가 알림은 최대 ${maximumStocks}종목까지 등록할 수 있습니다.`,
       );
     }
 
@@ -87,10 +96,20 @@ export class PriceAlertStore {
   }
 
   remove(code: string): boolean {
-    const result = this.#database
-      .prepare("DELETE FROM price_alert_stocks WHERE code = ?")
-      .run(code);
-    return result.changes > 0;
+    let removed = 0;
+    const transaction = this.#database.transaction(() => {
+      removed = this.#database
+        .prepare("DELETE FROM price_alert_stocks WHERE code = ?")
+        .run(code).changes;
+      if (removed === 0) {
+        return;
+      }
+      this.#database.prepare("DELETE FROM price_alert_events WHERE code = ?").run(code);
+      this.#database.prepare("DELETE FROM price_alert_openings WHERE code = ?").run(code);
+      this.#database.prepare("DELETE FROM price_alert_nxt_closes WHERE code = ?").run(code);
+    });
+    transaction();
+    return removed > 0;
   }
 
   list(): PriceAlertStock[] {
@@ -183,6 +202,53 @@ export class PriceAlertStore {
       });
   }
 
+  saveNxtClosingPrice(code: string, tradingDate: string, price: number): void {
+    this.#database
+      .prepare(
+        `INSERT INTO price_alert_nxt_closes (code, trading_date, closing_price, recorded_at)
+         VALUES (@code, @tradingDate, @price, @recordedAt)
+         ON CONFLICT(code, trading_date) DO UPDATE SET
+           closing_price = excluded.closing_price,
+           recorded_at = excluded.recorded_at`,
+      )
+      .run({
+        code,
+        tradingDate,
+        price,
+        recordedAt: Date.now(),
+      });
+  }
+
+  getNxtClosingPrice(code: string, tradingDate: string): number | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT closing_price FROM price_alert_nxt_closes
+         WHERE code = ? AND trading_date = ?`,
+      )
+      .get(code, tradingDate) as { closing_price: number } | undefined;
+    return row?.closing_price;
+  }
+
+  getLatestNxtClosingPriceBefore(
+    code: string,
+    tradingDate: string,
+  ): NxtClosingPrice | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT trading_date, closing_price
+         FROM price_alert_nxt_closes
+         WHERE code = ? AND trading_date < ?
+         ORDER BY trading_date DESC
+         LIMIT 1`,
+      )
+      .get(code, tradingDate) as
+      | { trading_date: string; closing_price: number }
+      | undefined;
+    return row
+      ? { tradingDate: row.trading_date, price: row.closing_price }
+      : undefined;
+  }
+
   isNightFuturesAlertEnabled(): boolean {
     const row = this.#database
       .prepare("SELECT enabled FROM night_futures_alert_settings WHERE id = 1")
@@ -190,7 +256,17 @@ export class PriceAlertStore {
     return row?.enabled === 1;
   }
 
-  setNightFuturesAlertEnabled(enabled: boolean): void {
+  getMaximumStockAlerts(): number {
+    return this.isNightFuturesAlertEnabled()
+      ? MAX_PRICE_ALERT_STOCKS_WITH_NIGHT_FUTURES
+      : MAX_PRICE_ALERT_STOCKS;
+  }
+
+  setNightFuturesAlertEnabled(enabled: boolean): boolean {
+    if (enabled && this.count() >= MAX_PRICE_ALERT_STOCKS) {
+      return false;
+    }
+
     this.#database
       .prepare(
         `INSERT INTO night_futures_alert_settings (id, enabled, updated_at)
@@ -200,6 +276,7 @@ export class PriceAlertStore {
            updated_at = excluded.updated_at`,
       )
       .run({ enabled: enabled ? 1 : 0, updatedAt: Date.now() });
+    return true;
   }
 
   hasNightFuturesNotified(event: Omit<PriceAlertEvent, "code">): boolean {
@@ -267,6 +344,17 @@ export class PriceAlertStore {
         recorded_at INTEGER NOT NULL,
         PRIMARY KEY (code, trading_date)
       );
+
+      CREATE TABLE IF NOT EXISTS price_alert_nxt_closes (
+        code TEXT NOT NULL,
+        trading_date TEXT NOT NULL,
+        closing_price REAL NOT NULL,
+        recorded_at INTEGER NOT NULL,
+        PRIMARY KEY (code, trading_date)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_price_alert_nxt_closes_code_date
+        ON price_alert_nxt_closes(code, trading_date DESC);
 
       CREATE TABLE IF NOT EXISTS night_futures_alert_settings (
         id INTEGER PRIMARY KEY CHECK(id = 1),

@@ -1,10 +1,170 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type WebSocket from "ws";
 
 import {
+  KIS_REALTIME_INACTIVITY_TIMEOUT_MS,
+  KisRealtimeClient,
   parseDomesticTradeMessage,
   parseKrxNightFuturesTradeMessage,
   parseOverseasTradeMessage,
 } from "../src/sources/kis-realtime.js";
+
+class FakeRealtimeWebSocket {
+  closed = false;
+  readonly pongs: string[] = [];
+  readonly sent: string[] = [];
+  onclose: WebSocket["onclose"] = null;
+  onerror: WebSocket["onerror"] = null;
+  onmessage: WebSocket["onmessage"] = null;
+  onopen: WebSocket["onopen"] = null;
+
+  close(): void {
+    this.closed = true;
+  }
+
+  pong(data: string): void {
+    this.pongs.push(data);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  open(): void {
+    this.onopen?.(new Event("open") as Parameters<NonNullable<WebSocket["onopen"]>>[0]);
+  }
+
+  message(data: string): void {
+    this.onmessage?.({ data } as Parameters<NonNullable<WebSocket["onmessage"]>>[0]);
+  }
+}
+
+describe("KisRealtimeClient", () => {
+  it("KIS PINGPONG 메시지에 원문 PONG을 반환한다", async () => {
+    const socket = new FakeRealtimeWebSocket();
+    const controller = new AbortController();
+    const client = new KisRealtimeClient(
+      {
+        appKey: "app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+        websocketUrl: "ws://ops.example.com:21000",
+      },
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({ approval_key: "approval-key" }),
+        }) as Response,
+      () => socket as unknown as WebSocket,
+    );
+
+    const streaming = client.streamPriceAlerts(
+      [{ assetType: "domestic", code: "005930", market: "KRX" }],
+      () => undefined,
+      controller.signal,
+    );
+
+    await vi.waitFor(() => expect(socket.onopen).not.toBeNull());
+    socket.open();
+    const pingPong = JSON.stringify({ header: { tr_id: "PINGPONG" } });
+    socket.message(pingPong);
+
+    await vi.waitFor(() => expect(socket.pongs).toEqual([pingPong]));
+    controller.abort();
+    await streaming;
+  });
+
+  it("2분 동안 메시지가 없으면 소켓을 종료해 재연결할 수 있게 한다", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeRealtimeWebSocket();
+    const controller = new AbortController();
+    const client = new KisRealtimeClient(
+      {
+        appKey: "app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+        websocketUrl: "ws://ops.example.com:21000",
+      },
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({ approval_key: "approval-key" }),
+        }) as Response,
+      () => socket as unknown as WebSocket,
+    );
+
+    try {
+      const streaming = client.streamPriceAlerts(
+        [{ assetType: "domestic", code: "005930", market: "KRX" }],
+        () => undefined,
+        controller.signal,
+      );
+      await flushMicrotasks();
+      expect(socket.onopen).not.toBeNull();
+      socket.open();
+      socket.message(createSubscriptionResponse());
+      await flushMicrotasks();
+      expect(client.getStatus()).toMatchObject({
+        state: "connected",
+        confirmedSubscriptions: 1,
+        totalSubscriptions: 1,
+      });
+
+      const rejected = expect(streaming).rejects.toThrow("2분 동안 수신되지 않아 재연결");
+      await vi.advanceTimersByTimeAsync(KIS_REALTIME_INACTIVITY_TIMEOUT_MS);
+      await rejected;
+      expect(socket.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("KIS가 구독을 거절하면 즉시 연결을 종료한다", async () => {
+    const socket = new FakeRealtimeWebSocket();
+    const controller = new AbortController();
+    const client = new KisRealtimeClient(
+      {
+        appKey: "app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+        websocketUrl: "ws://ops.example.com:21000",
+      },
+      async () => Response.json({ approval_key: "approval-key" }),
+      () => socket as unknown as WebSocket,
+    );
+
+    const streaming = client.streamPriceAlerts(
+      [{ assetType: "domestic", code: "005930", market: "KRX" }],
+      () => undefined,
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(socket.onopen).not.toBeNull());
+    const rejected = expect(streaming).rejects.toThrow("구독이 거절되었습니다");
+    socket.open();
+    socket.message(createSubscriptionResponse("1", "구독 한도를 초과했습니다."));
+
+    await rejected;
+    expect(socket.closed).toBe(true);
+    expect(client.getStatus()).toMatchObject({
+      state: "error",
+      confirmedSubscriptions: 0,
+      totalSubscriptions: 1,
+    });
+  });
+});
+
+function createSubscriptionResponse(resultCode = "0", message = "정상처리 되었습니다."): string {
+  return JSON.stringify({
+    header: { tr_id: "H0UNCNT0", tr_key: "005930" },
+    body: { rt_cd: resultCode, msg1: message },
+  });
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let count = 0; count < 10; count += 1) {
+    await Promise.resolve();
+  }
+}
 
 describe("parseDomesticTradeMessage", () => {
   it("KIS 국내 체결가 WebSocket 메시지에서 현재가와 시가를 읽는다", () => {

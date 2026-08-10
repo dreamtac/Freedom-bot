@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,9 +22,11 @@ describe("StockMasterMonitor", () => {
     const directory = await mkdtemp(join(tmpdir(), "freedom-bot-stock-master-"));
     temporaryDirectories.push(directory);
     const store = await StockStore.open(join(directory, "test.sqlite"));
+    const backupPath = join(directory, "backups", "before-stock-master.sqlite");
     let revision = 1;
     const monitor = new StockMasterMonitor({
       store,
+      backupPath,
       intervalMs: 86_400_000,
       source: {
         async fetchDomesticStocks() {
@@ -51,6 +53,7 @@ describe("StockMasterMonitor", () => {
     });
     expect(store.resolve("222222")).toMatchObject({ name: "국내 B" });
     expect(store.resolveOverseas("BBBB")).toMatchObject({ name: "미국 B" });
+    await expect(access(backupPath)).resolves.toBeUndefined();
 
     store.close();
   });

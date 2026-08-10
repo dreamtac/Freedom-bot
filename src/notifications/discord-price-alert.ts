@@ -12,7 +12,7 @@ export interface StockPriceAlertNotification {
   direction: PriceAlertDirection;
   market: RealtimeMarket | OverseasExchange | "KRX_NIGHT_FUTURES";
   name: string;
-  openingPrice: number;
+  referencePrice: number;
   referenceLabel?: string;
   rate: number;
   threshold: number;
@@ -41,7 +41,7 @@ export async function sendStockPriceAlert(
     },
     {
       name: referenceLabel,
-      value: formatPrice(alert.openingPrice, alert.currency),
+      value: formatPrice(alert.referencePrice, alert.currency),
       inline: true,
     },
     ...(alert.assetType === "nightFutures"

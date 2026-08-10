@@ -11,6 +11,8 @@ const DOMESTIC_DAILY_PRICE_PATH =
   "/uapi/domestic-stock/v1/quotations/inquire-daily-price";
 const DOMESTIC_NEWS_TITLE_PATH =
   "/uapi/domestic-stock/v1/quotations/news-title";
+const OVERSEAS_NEWS_TITLE_PATH =
+  "/uapi/overseas-price/v1/quotations/news-title";
 const DOMESTIC_INVESTOR_PATH =
   "/uapi/domestic-stock/v1/quotations/inquire-investor";
 const DOMESTIC_INDEX_PRICE_PATH =
@@ -28,6 +30,7 @@ const TOKEN_EXPIRY_SAFETY_MS = 60_000;
 export type DomesticMarketCode = "J" | "NX";
 
 export interface KisStockQuote {
+  businessDate?: string;
   code: string;
   marketCode: DomesticMarketCode;
   name?: string;
@@ -125,6 +128,8 @@ interface KisTokenCache {
 }
 
 const tokenCaches = new Map<string, KisTokenCache>();
+const tokenRequests = new Map<string, Promise<string>>();
+const KIS_REQUEST_TIMEOUT_MS = 15_000;
 
 interface FetchLike {
   (input: string | URL, init?: RequestInit): Promise<Response>;
@@ -146,7 +151,7 @@ export class KisClient {
     url.searchParams.set("FID_COND_MRKT_DIV_CODE", marketCode);
     url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -176,7 +181,7 @@ export class KisClient {
     url.searchParams.set("FID_PERIOD_DIV_CODE", "D");
     url.searchParams.set("FID_ORG_ADJ_PRC", "0");
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -212,7 +217,7 @@ export class KisClient {
     url.searchParams.set("FID_RANK_SORT_CLS_CODE", "");
     url.searchParams.set("FID_INPUT_SRNO", "");
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -232,6 +237,43 @@ export class KisClient {
       .slice(0, count);
   }
 
+  async fetchOverseasNewsTitles(
+    symbol: string,
+    exchange: OverseasExchange,
+    count = 10,
+  ): Promise<KisNewsTitle[]> {
+    const normalizedSymbol = normalizeOverseasStockSymbol(symbol);
+    const accessToken = await this.getAccessToken();
+    const url = new URL(OVERSEAS_NEWS_TITLE_PATH, this.config.baseUrl);
+    url.searchParams.set("INFO_GB", "");
+    url.searchParams.set("CLASS_CD", "");
+    url.searchParams.set("NATION_CD", "US");
+    url.searchParams.set("EXCHANGE_CD", exchange);
+    url.searchParams.set("SYMB", normalizedSymbol);
+    url.searchParams.set("DATA_DT", "");
+    url.searchParams.set("DATA_TM", "");
+    url.searchParams.set("CTS", "");
+
+    const response = await this.fetchWithTimeout(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        appkey: this.config.appKey,
+        appsecret: this.config.appSecret,
+        tr_id: "HHPSTH60100C1",
+        custtype: "P",
+      },
+    });
+
+    const data = await readJsonResponse(response, "미국 주식 뉴스 제목 조회");
+    assertKisSuccess(data, "미국 주식 뉴스 제목 조회");
+
+    return getOverseasNewsTitleRows(data)
+      .map(parseOverseasNewsTitle)
+      .filter((news): news is KisNewsTitle => news !== undefined)
+      .slice(0, count);
+  }
+
   async fetchDomesticInvestorFlow(
     code: string,
   ): Promise<KisDomesticInvestorFlow> {
@@ -241,7 +283,7 @@ export class KisClient {
     url.searchParams.set("FID_COND_MRKT_DIV_CODE", "J");
     url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -268,7 +310,7 @@ export class KisClient {
     url.searchParams.set("FID_COND_MRKT_DIV_CODE", "U");
     url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -293,7 +335,7 @@ export class KisClient {
     url.searchParams.set("FID_HOUR_CLS_CODE", "0");
     url.searchParams.set("FID_PW_DATA_INCU_YN", "Y");
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -320,7 +362,7 @@ export class KisClient {
     url.searchParams.set("EXCD", exchange);
     url.searchParams.set("SYMB", normalizedSymbol);
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -351,7 +393,7 @@ export class KisClient {
     url.searchParams.set("BYMD", "");
     url.searchParams.set("MODP", "1");
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -377,7 +419,7 @@ export class KisClient {
     url.searchParams.set("FID_COND_MRKT_DIV_CODE", "CM");
     url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -401,8 +443,25 @@ export class KisClient {
       return cachedToken.accessToken;
     }
 
+    const pendingRequest = tokenRequests.get(cacheKey);
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const request = this.issueAccessToken(cacheKey).finally(() => {
+      if (tokenRequests.get(cacheKey) === request) {
+        tokenRequests.delete(cacheKey);
+      }
+    });
+    tokenRequests.set(cacheKey, request);
+    return request;
+  }
+
+  private async issueAccessToken(cacheKey: string): Promise<string> {
+    const now = Date.now();
+
     const url = new URL(TOKEN_PATH, this.config.baseUrl);
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -424,6 +483,13 @@ export class KisClient {
     });
 
     return accessToken;
+  }
+
+  private fetchWithTimeout(input: string | URL, init?: RequestInit): Promise<Response> {
+    return this.fetchImpl(input, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(KIS_REQUEST_TIMEOUT_MS),
+    });
   }
 
   private getTokenCacheKey(): string {
@@ -504,6 +570,7 @@ function parseDomesticQuote(
   marketCode: DomesticMarketCode,
   output: Record<string, unknown>,
 ): KisStockQuote {
+  const businessDate = readOptionalString(output, "stck_bsop_date");
   const name = readOptionalString(output, "hts_kor_isnm");
   const marketName = readOptionalString(output, "rprs_mrkt_kor_name");
   const open = readOptionalNumber(output, "stck_oprc");
@@ -515,6 +582,7 @@ function parseDomesticQuote(
   return {
     code,
     marketCode,
+    ...(businessDate ? { businessDate } : {}),
     ...(name ? { name } : {}),
     ...(marketName ? { marketName } : {}),
     price: readNumber(output, "stck_prpr"),
@@ -773,6 +841,39 @@ function parseNewsTitle(
   return {
     ...(serialNumber ? { serialNumber } : {}),
     ...(providerCode ? { providerCode } : {}),
+    ...(date ? { date } : {}),
+    ...(time ? { time } : {}),
+    title,
+    ...(categoryCode ? { categoryCode } : {}),
+    ...(source ? { source } : {}),
+  };
+}
+
+function getOverseasNewsTitleRows(data: Record<string, unknown>): Record<string, unknown>[] {
+  const output1 = asRecordArray(data.output1);
+  if (output1.length > 0) {
+    return output1;
+  }
+
+  return asRecordArray(data.output);
+}
+
+function parseOverseasNewsTitle(
+  output: Record<string, unknown>,
+): KisNewsTitle | undefined {
+  const title = readOptionalString(output, "title");
+  if (!title) {
+    return undefined;
+  }
+
+  const serialNumber = readOptionalString(output, "news_key");
+  const date = readOptionalString(output, "data_dt");
+  const time = readOptionalString(output, "data_tm");
+  const categoryCode = readOptionalString(output, "class_cd");
+  const source = readOptionalString(output, "source");
+
+  return {
+    ...(serialNumber ? { serialNumber } : {}),
     ...(date ? { date } : {}),
     ...(time ? { time } : {}),
     title,

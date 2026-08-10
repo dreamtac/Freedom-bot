@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import Database from "better-sqlite3";
@@ -67,6 +67,10 @@ export interface StockMasterChange {
   market?: string;
 }
 
+const STOCK_MASTER_GUARD_MINIMUM_EXISTING = 100;
+const STOCK_MASTER_MINIMUM_RATIO = 0.75;
+const STOCK_MASTER_MAXIMUM_RATIO = 1.25;
+
 export class StockStore {
   readonly #database: Database.Database;
 
@@ -86,6 +90,12 @@ export class StockStore {
 
   close(): void {
     this.#database.close();
+  }
+
+  async backup(filePath: string): Promise<void> {
+    await mkdir(dirname(filePath), { recursive: true });
+    await rm(filePath, { force: true });
+    await this.#database.backup(filePath);
   }
 
   count(): number {
@@ -246,6 +256,11 @@ export class StockStore {
         .filter((stock) => /^\d{6}$/.test(stock.code))
         .map((stock) => [stock.code, stock] as const),
     );
+    assertReasonableStockMasterSize(
+      "국내",
+      existingCodes.size,
+      incomingStocks.size,
+    );
     const initial = existingCodes.size === 0;
     const addedStocks = [...incomingStocks]
       .filter(([code]) => !existingCodes.has(code))
@@ -294,6 +309,11 @@ export class StockStore {
       stocks
         .filter((stock) => /^[A-Z][A-Z0-9.-]{0,9}$/.test(stock.symbol))
         .map((stock) => [`${stock.exchange}:${stock.symbol}`, stock] as const),
+    );
+    assertReasonableStockMasterSize(
+      "미국",
+      existingKeys.size,
+      incomingStocks.size,
     );
     const initial = existingKeys.size === 0;
     const addedStocks = [...incomingStocks]
@@ -661,6 +681,26 @@ export class StockStore {
         ON overseas_stock_aliases(symbol, exchange);
     `);
   }
+}
+
+function assertReasonableStockMasterSize(
+  label: string,
+  existingCount: number,
+  incomingCount: number,
+): void {
+  if (existingCount < STOCK_MASTER_GUARD_MINIMUM_EXISTING) {
+    return;
+  }
+
+  const ratio = incomingCount / existingCount;
+  if (ratio >= STOCK_MASTER_MINIMUM_RATIO && ratio <= STOCK_MASTER_MAXIMUM_RATIO) {
+    return;
+  }
+
+  throw new Error(
+    `${label} 종목 마스터 변화 폭이 비정상적입니다. ` +
+      `(기존 ${existingCount}개, 신규 ${incomingCount}개) 기존 데이터를 유지합니다.`,
+  );
 }
 
 function toMatch(

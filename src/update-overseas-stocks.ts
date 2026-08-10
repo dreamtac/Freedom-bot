@@ -28,6 +28,8 @@ const OVERSEAS_MASTER_FILES: ReadonlyArray<{
     url: "https://new.real.download.dws.co.kr/common/master/amsmst.cod.zip",
   },
 ];
+const STOCK_MASTER_TIMEOUT_MS = 30_000;
+const MINIMUM_OVERSEAS_STOCKS = 5_000;
 
 if (isDirectExecution()) {
   await updateOverseasStocks();
@@ -42,7 +44,9 @@ export async function fetchOverseasStocks(
 ): Promise<OverseasStockEntry[]> {
   const batches = await Promise.all(
     OVERSEAS_MASTER_FILES.map(async ({ exchange, url }) => {
-      const response = await fetchImpl(url);
+      const response = await fetchImpl(url, {
+        signal: AbortSignal.timeout(STOCK_MASTER_TIMEOUT_MS),
+      });
       if (!response.ok) {
         throw new Error(
           exchange + " 미국 종목 목록 다운로드에 실패했습니다. (" + response.status + ")",
@@ -55,8 +59,10 @@ export async function fetchOverseasStocks(
     }),
   );
   const stocks = mergeCuratedAliases(batches.flat());
-  if (stocks.length === 0) {
-    throw new Error("미국 상장 종목 목록에서 가져온 종목이 없습니다.");
+  if (stocks.length < MINIMUM_OVERSEAS_STOCKS) {
+    throw new Error(
+      `미국 상장 종목 목록이 비정상적으로 적습니다. (${stocks.length}개) 기존 데이터를 유지합니다.`,
+    );
   }
 
   return stocks;

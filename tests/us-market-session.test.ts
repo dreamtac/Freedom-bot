@@ -25,4 +25,15 @@ describe("getUsMarketSession", () => {
       label: "애프터장",
     });
   });
+
+  it("미국 휴장일과 조기 폐장을 반영한다", () => {
+    expect(getUsMarketSession(new Date("2026-12-25T15:00:00Z"))).toMatchObject({
+      kind: "closed",
+      label: "휴장",
+    });
+    expect(getUsMarketSession(new Date("2026-11-27T19:00:00Z"))).toMatchObject({
+      kind: "after",
+      label: "애프터장",
+    });
+  });
 });

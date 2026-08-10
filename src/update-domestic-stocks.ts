@@ -7,6 +7,8 @@ import type { StockMasterSyncResult } from "./storage/stock-store.js";
 
 const KRX_LISTED_COMPANIES_URL =
   "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13";
+const STOCK_MASTER_TIMEOUT_MS = 30_000;
+const MINIMUM_DOMESTIC_STOCKS = 1_000;
 
 if (isDirectExecution()) {
   await updateDomesticStocks();
@@ -19,7 +21,9 @@ interface FetchLike {
 export async function fetchDomesticStocks(
   fetchImpl: FetchLike = globalThis.fetch,
 ): Promise<DomesticStockEntry[]> {
-  const response = await fetchImpl(KRX_LISTED_COMPANIES_URL);
+  const response = await fetchImpl(KRX_LISTED_COMPANIES_URL, {
+    signal: AbortSignal.timeout(STOCK_MASTER_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`상장 종목 목록 다운로드에 실패했습니다. (${response.status})`);
   }
@@ -29,8 +33,10 @@ export async function fetchDomesticStocks(
   );
   const stocks = parseKrxListedCompanies(html);
 
-  if (stocks.length === 0) {
-    throw new Error("상장 종목 목록에서 가져온 종목이 없습니다.");
+  if (stocks.length < MINIMUM_DOMESTIC_STOCKS) {
+    throw new Error(
+      `국내 상장 종목 목록이 비정상적으로 적습니다. (${stocks.length}개) 기존 데이터를 유지합니다.`,
+    );
   }
 
   return stocks;

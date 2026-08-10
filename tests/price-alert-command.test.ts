@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { priceAlertCommand } from "../src/commands/price-alert.js";
 import { nightFuturesAlertCommand } from "../src/commands/night-futures-alert.js";
-import { getOpeningPriceChangeRate } from "../src/monitor/price-alert-monitor.js";
+import { getReferencePriceChangeRate } from "../src/monitor/price-alert-monitor.js";
 
 describe("priceAlertCommand", () => {
   it("서버 관리 권한이 있는 사용자에게 주가 알림 관리 명령을 제공한다", () => {
@@ -37,10 +37,10 @@ describe("nightFuturesAlertCommand", () => {
   });
 });
 
-describe("getOpeningPriceChangeRate", () => {
-  it("현재가를 시가 대비 등락률로 환산한다", () => {
-    expect(getOpeningPriceChangeRate(10_500, 10_000)).toBe(5);
-    expect(getOpeningPriceChangeRate(9_700, 10_000)).toBeCloseTo(-3);
-    expect(getOpeningPriceChangeRate(10_000, 0)).toBeUndefined();
+describe("getReferencePriceChangeRate", () => {
+  it("현재가를 기준가 대비 등락률로 환산한다", () => {
+    expect(getReferencePriceChangeRate(10_500, 10_000)).toBe(5);
+    expect(getReferencePriceChangeRate(9_700, 10_000)).toBeCloseTo(-3);
+    expect(getReferencePriceChangeRate(10_000, 0)).toBeUndefined();
   });
 });

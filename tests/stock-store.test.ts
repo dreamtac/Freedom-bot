@@ -173,6 +173,21 @@ describe("StockStore", () => {
 
     store.close();
   });
+
+  it("종목 마스터가 비정상적으로 급감하면 기존 목록을 보존한다", async () => {
+    const store = await createStore();
+    const original = Array.from({ length: 100 }, (_, index) => ({
+      code: String(100_000 + index),
+      name: `국내 ${index}`,
+      market: "유가증권",
+    }));
+    store.syncDomesticStocks(original, "krx-kind");
+
+    expect(() => store.syncDomesticStocks(original.slice(0, 10), "krx-kind"))
+      .toThrow("변화 폭이 비정상적입니다");
+    expect(store.resolve("100099")).toMatchObject({ name: "국내 99" });
+    store.close();
+  });
 });
 
 async function createStore(): Promise<StockStore> {

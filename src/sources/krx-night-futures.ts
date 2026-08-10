@@ -4,6 +4,7 @@ export const KRX_NIGHT_FUTURES_MASTER_URL =
   "https://new.real.download.dws.co.kr/common/master/fo_cme_code.mst.zip";
 
 const MASTER_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const MASTER_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface KrxNightFuturesContract {
   code: string;
@@ -28,7 +29,9 @@ export async function fetchKrxNightFuturesContracts(): Promise<KrxNightFuturesCo
     return cachedContracts;
   }
 
-  const response = await fetch(KRX_NIGHT_FUTURES_MASTER_URL);
+  const response = await fetch(KRX_NIGHT_FUTURES_MASTER_URL, {
+    signal: AbortSignal.timeout(MASTER_REQUEST_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(
       `KOSPI200 야간선물 종목 목록 다운로드에 실패했습니다. (${response.status})`,

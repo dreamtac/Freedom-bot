@@ -19,6 +19,7 @@ interface StockMasterSource {
 }
 
 export interface StockMasterMonitorOptions {
+  backupPath?: string;
   store: StockStore;
   intervalMs: number;
   client?: Client;
@@ -33,6 +34,7 @@ export interface StockMasterRefreshResult {
 
 export class StockMasterMonitor {
   readonly #store: StockStore;
+  readonly #backupPath: string | undefined;
   readonly #intervalMs: number;
   readonly #client: Client | undefined;
   readonly #channelId: string | undefined;
@@ -40,8 +42,16 @@ export class StockMasterMonitor {
   #timer: NodeJS.Timeout | undefined;
   #stopped = true;
 
-  constructor({ store, intervalMs, client, channelId, source }: StockMasterMonitorOptions) {
+  constructor({
+    backupPath,
+    store,
+    intervalMs,
+    client,
+    channelId,
+    source,
+  }: StockMasterMonitorOptions) {
     this.#store = store;
+    this.#backupPath = backupPath;
     this.#intervalMs = intervalMs;
     this.#client = client;
     this.#channelId = channelId;
@@ -69,6 +79,9 @@ export class StockMasterMonitor {
       this.#source.fetchDomesticStocks(),
       this.#source.fetchOverseasStocks(),
     ]);
+    if (this.#backupPath) {
+      await this.#store.backup(this.#backupPath);
+    }
     const result = {
       domestic: this.#store.syncDomesticStocks(domesticStocks, "krx-kind"),
       overseas: this.#store.syncOverseasStocks(overseasStocks, "kis-overseas-master"),

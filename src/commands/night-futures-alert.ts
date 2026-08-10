@@ -58,7 +58,15 @@ export const nightFuturesAlertCommand: BotCommand = {
         });
         return;
       }
-      context.priceAlertStore.setNightFuturesAlertEnabled(true);
+      const enabled = context.priceAlertStore.setNightFuturesAlertEnabled(true);
+      if (!enabled) {
+        await interaction.reply({
+          content:
+            "실시간 주가 알림 종목이 40개 등록되어 있습니다. KOSPI 야간선물 알림을 켜려면 종목 알림을 최소 1개 제거해 주세요.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       context.priceAlertMonitor?.refresh();
       await interaction.reply({
         content:

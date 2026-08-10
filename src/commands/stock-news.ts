@@ -10,7 +10,18 @@ import {
   KisClient,
   normalizeDomesticStockCode,
 } from "../sources/kis.js";
-import type { KisNewsTitle, KisStockQuote } from "../sources/kis.js";
+import type {
+  KisNewsTitle,
+  KisOverseasQuote,
+  KisStockQuote,
+} from "../sources/kis.js";
+import { getNxtMarketSession } from "../sources/nxt-market-session.js";
+import {
+  getOverseasExchangeLabel,
+  getOverseasStockCandidates,
+  suggestOverseasStocks,
+} from "../sources/overseas-stocks.js";
+import { getUsMarketSession } from "../sources/us-market-session.js";
 import type { BotCommand } from "./types.js";
 
 const DEFAULT_NEWS_COUNT = 7;
@@ -24,7 +35,7 @@ export const stockNewsCommand: BotCommand = {
     .addStringOption((option) =>
       option
         .setName("종목")
-        .setDescription("국내 주식 6자리 코드나 종목명입니다. 예: 005930, 삼성전자")
+        .setDescription("국내 종목명·코드 또는 미국 티커·종목명입니다. 예: 삼성전자, NVDA")
         .setRequired(true)
         .setAutocomplete(true),
     )
@@ -37,18 +48,24 @@ export const stockNewsCommand: BotCommand = {
     ),
 
   async autocomplete(interaction, context) {
-    if (!context.stockStore) {
-      await interaction.respond([]);
-      return;
-    }
-
     const focusedValue = interaction.options.getFocused();
-    await interaction.respond(
-      context.stockStore.suggest(focusedValue).map((stock) => ({
-        name: formatSuggestionName(stock),
-        value: stock.code,
+    const domestic = context.stockStore?.suggest(focusedValue) ?? [];
+    const storedOverseas =
+      context.stockStore &&
+      "suggestOverseas" in context.stockStore &&
+      typeof context.stockStore.suggestOverseas === "function"
+        ? context.stockStore.suggestOverseas(focusedValue, 25 - domestic.length)
+        : [];
+    const overseas = storedOverseas.length > 0
+      ? storedOverseas
+      : suggestOverseasStocks(focusedValue, 25 - domestic.length);
+    await interaction.respond([
+      ...domestic.map((stock) => ({ name: formatSuggestionName(stock), value: stock.code })),
+      ...overseas.map((stock) => ({
+        name: `${stock.name} (${stock.symbol}) · ${getOverseasExchangeLabel(stock.exchange)}`,
+        value: stock.symbol,
       })),
-    );
+    ]);
   },
 
   async execute(interaction, context) {
@@ -64,29 +81,78 @@ export const stockNewsCommand: BotCommand = {
     const query = interaction.options.getString("종목", true);
     const newsCount = interaction.options.getInteger("개수") ?? DEFAULT_NEWS_COUNT;
     let stock;
+    let overseasStock;
 
     try {
-      if (!context.stockStore) {
-        throw new StockLookupError("종목 데이터베이스가 열려 있지 않습니다.");
+      if (context.stockStore) {
+        stock = context.stockStore.resolve(query);
+        normalizeDomesticStockCode(stock.code);
       }
-
-      stock = context.stockStore.resolve(query);
-      normalizeDomesticStockCode(stock.code);
     } catch (error: unknown) {
-      await interaction.reply({
-        content:
-          error instanceof Error
-            ? error.message
-            : "종목을 찾지 못했습니다.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
+      if (/^\d{6}$/.test(query.trim())) {
+        await interaction.reply({
+          content: error instanceof Error ? error.message : "종목을 찾지 못했습니다.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+    if (
+      !stock &&
+      context.stockStore &&
+      "countOverseas" in context.stockStore &&
+      context.stockStore.countOverseas()
+    ) {
+      try {
+        overseasStock = context.stockStore.resolveOverseas(query);
+      } catch {
+        // Direct ticker lookup remains available between master file updates.
+      }
     }
 
     await interaction.deferReply();
 
     try {
       const client = new KisClient(context.kis);
+      if (!stock) {
+        const candidates = overseasStock
+          ? [overseasStock]
+          : getOverseasStockCandidates(query);
+        const results = await Promise.allSettled(
+          candidates.map(async (candidate) => {
+            const quote = await client.fetchOverseasQuote(candidate.symbol, candidate.exchange);
+            const newsResult = await Promise.allSettled([
+              client.fetchOverseasNewsTitles(candidate.symbol, candidate.exchange, newsCount),
+            ]);
+            const news = newsResult[0];
+            return {
+              quote,
+              name: candidate.name,
+              news: news?.status === "fulfilled" ? news.value : [],
+              newsError: news ? getError(news) : undefined,
+            };
+          }),
+        );
+        const result = results.find((item) => item.status === "fulfilled");
+        if (!result || result.status !== "fulfilled") {
+          const firstError = results.find((item) => item.status === "rejected");
+          throw firstError?.status === "rejected"
+            ? firstError.reason
+            : new KisApiError("미국 주식 뉴스 조회에 실패했습니다.");
+        }
+
+        await interaction.editReply({
+          embeds: [buildStockNewsEmbed({
+            code: result.value.quote.symbol,
+            ...(result.value.name ? { name: result.value.name } : {}),
+            overseasQuote: result.value.quote,
+            news: result.value.news,
+            ...(result.value.newsError ? { newsError: result.value.newsError } : {}),
+          })],
+        });
+        return;
+      }
+
       const [krxResult, nxtResult, newsResult] = await Promise.allSettled([
         client.fetchDomesticQuote(stock.code, "J"),
         client.fetchDomesticQuote(stock.code, "NX"),
@@ -140,6 +206,7 @@ interface StockNewsEmbedInput {
   name?: string;
   krxQuote?: KisStockQuote;
   nxtQuote?: KisStockQuote;
+  overseasQuote?: KisOverseasQuote;
   news: readonly KisNewsTitle[];
   newsError?: Error;
 }
@@ -149,15 +216,16 @@ export function buildStockNewsEmbed({
   name,
   krxQuote,
   nxtQuote,
+  overseasQuote,
   news,
   newsError,
 }: StockNewsEmbedInput): EmbedBuilder {
-  const primaryQuote = nxtQuote ?? krxQuote;
-  const displayName = name ?? primaryQuote?.name ?? code;
+  const primaryQuote = overseasQuote ?? nxtQuote ?? krxQuote;
+  const displayName = name ?? krxQuote?.name ?? nxtQuote?.name ?? code;
   const embed = new EmbedBuilder()
     .setColor(primaryQuote ? getQuoteColor(primaryQuote) : 0x667085)
     .setTitle(`${displayName} (${code}) 관련 뉴스`)
-    .setDescription(buildDescription(krxQuote, nxtQuote))
+    .setDescription(buildDescription(krxQuote, nxtQuote, overseasQuote))
     .addFields({
       name: newsError ? "최근 관련 뉴스 (조회 실패)" : `최근 관련 뉴스 ${news.length}건`,
       value: newsError
@@ -175,18 +243,27 @@ export function buildStockNewsEmbed({
 function buildDescription(
   krxQuote?: KisStockQuote,
   nxtQuote?: KisStockQuote,
+  overseasQuote?: KisOverseasQuote,
 ): string {
   const lines = ["**주가 흐름**"];
 
-  if (nxtQuote) {
-    lines.push(`NXT 애프터장 ${formatQuote(nxtQuote)}`);
+  if (overseasQuote) {
+    const session = getUsMarketSession(overseasQuote.requestedAt);
+    lines.push(`미국 ${session.label} ${formatOverseasQuote(overseasQuote)}`);
+    lines.push(
+      `거래소 ${overseasQuote.exchangeName} · ${session.timeZone === "Asia/Seoul" ? "한국" : "미 동부"} 시간 ${session.localTime}`,
+    );
   }
 
-  if (krxQuote) {
+  if (!overseasQuote && nxtQuote) {
+    lines.push(`${getNxtMarketSession(nxtQuote.requestedAt).label} ${formatQuote(nxtQuote)}`);
+  }
+
+  if (!overseasQuote && krxQuote) {
     lines.push(`KRX 정규장 ${formatQuote(krxQuote)}`);
   }
 
-  if (!krxQuote && !nxtQuote) {
+  if (!krxQuote && !nxtQuote && !overseasQuote) {
     lines.push("시세를 가져오지 못했습니다.");
   }
 
@@ -203,6 +280,16 @@ function formatQuote(quote: KisStockQuote): string {
         ? "-"
         : "";
   return `${formatWon(quote.price)} · 전일 대비 ${prefix}${formatWon(Math.abs(quote.change))} (${prefix}${Math.abs(quote.changeRate).toFixed(2)}%)`;
+}
+
+function formatOverseasQuote(quote: KisOverseasQuote): string {
+  const prefix =
+    quote.changeDirection === "up"
+      ? "+"
+      : quote.changeDirection === "down"
+        ? "-"
+        : "";
+  return `$${formatNumber(quote.price)} · 전일 대비 ${prefix}$${formatNumber(Math.abs(quote.change))} (${prefix}${Math.abs(quote.changeRate).toFixed(2)}%)`;
 }
 
 function formatNewsList(news: readonly KisNewsTitle[]): string {
@@ -263,7 +350,7 @@ function isUsableQuote(quote: KisStockQuote): boolean {
   );
 }
 
-function getQuoteColor(quote: KisStockQuote): number {
+function getQuoteColor(quote: Pick<KisStockQuote, "changeDirection">): number {
   if (quote.changeDirection === "up") {
     return 0xd92d20;
   }
@@ -310,6 +397,12 @@ function truncateText(value: string, maximumLength: number): string {
 
 function formatWon(value: number): string {
   return `${new Intl.NumberFormat("ko-KR").format(value)}원`;
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 function formatDate(date: Date): string {

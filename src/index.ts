@@ -35,18 +35,23 @@ async function startBot(): Promise<void> {
         legacyStorePath: resolve(".data", "seen-posts.json"),
       })
     : undefined;
-  const priceAlertMonitor =
+  const realtimeClient =
     config.kis && config.notificationChannelId
+      ? new KisRealtimeClient(config.kis)
+      : undefined;
+  const priceAlertMonitor =
+    config.kis && realtimeClient && config.notificationChannelId
       ? new PriceAlertMonitor({
           channelId: config.notificationChannelId,
           client,
-          openingPriceSource: new KisClient(config.kis),
-          realtimeClient: new KisRealtimeClient(config.kis),
+          nxtClosePriceSource: new KisClient(config.kis),
+          realtimeClient,
           store: priceAlertStore,
         })
       : undefined;
   const stockMasterMonitor = new StockMasterMonitor({
     store: stockStore,
+    backupPath: resolve(".data", "backups", "before-stock-master.sqlite"),
     intervalMs: config.stockMasterRefreshIntervalMs,
     ...(config.notificationChannelId
       ? { client, channelId: config.notificationChannelId }
@@ -98,6 +103,7 @@ async function startBot(): Promise<void> {
           ? { notificationChannelId: config.notificationChannelId }
           : {}),
         ...(priceAlertMonitor ? { priceAlertMonitor } : {}),
+        ...(realtimeClient ? { realtimeStatusProvider: realtimeClient } : {}),
         priceAlertStore,
         stockStore,
       };
@@ -135,7 +141,12 @@ async function startBot(): Promise<void> {
     }
   });
 
-  const shutdown = (signal: string): void => {
+  let shuttingDown = false;
+  const shutdown = (signal: string, exitCode = 0): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
     console.log(`${signal} 신호를 받아 봇을 종료합니다.`);
     newsMonitor?.stop();
     priceAlertMonitor?.stop();
@@ -143,11 +154,19 @@ async function startBot(): Promise<void> {
     priceAlertStore.close();
     stockStore.close();
     client.destroy();
-    process.exit(0);
+    process.exit(exitCode);
   };
 
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("uncaughtException", (error) => {
+    console.error("처리하지 못한 예외로 봇을 종료합니다.", error);
+    shutdown("uncaughtException", 1);
+  });
+  process.once("unhandledRejection", (reason) => {
+    console.error("처리하지 못한 Promise 오류로 봇을 종료합니다.", reason);
+    shutdown("unhandledRejection", 1);
+  });
 
   await client.login(config.botToken);
 }

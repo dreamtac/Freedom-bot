@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { quoteCommand } from "../src/commands/quote.js";
+import { buildQuoteEmbed, quoteCommand } from "../src/commands/quote.js";
 import {
   buildNightFuturesEmbed,
   nightFuturesCommand,
@@ -17,6 +17,88 @@ describe("quoteCommand", () => {
       required: true,
       autocomplete: true,
     });
+  });
+
+  it("KRX 정규장에는 NXT 메인마켓 시세를 숨긴다", () => {
+    const embed = buildQuoteEmbed({
+      resolvedName: "삼성전자",
+      nxtQuote: {
+        code: "005930",
+        marketCode: "NX",
+        price: 222_000,
+        change: -32_000,
+        changeRate: -12.6,
+        changeDirection: "down",
+        requestedAt: new Date("2026-07-28T12:32:00+09:00"),
+      },
+      krxQuote: {
+        code: "005930",
+        marketCode: "J",
+        price: 222_000,
+        change: -32_000,
+        changeRate: -12.6,
+        changeDirection: "down",
+        requestedAt: new Date("2026-07-28T12:32:00+09:00"),
+      },
+    }).toJSON();
+
+    expect(embed.description).toContain("KRX 정규장: 222,000원");
+    expect(embed.description).not.toContain("NXT 메인마켓");
+    expect(embed.fields?.[0]).toMatchObject({ name: "KRX 정규장" });
+  });
+
+  it("NXT 애프터마켓에는 NXT 시세를 함께 표시한다", () => {
+    const embed = buildQuoteEmbed({
+      resolvedName: "삼성전자",
+      nxtQuote: {
+        code: "005930",
+        marketCode: "NX",
+        price: 222_500,
+        change: -31_500,
+        changeRate: -12.4,
+        changeDirection: "down",
+        requestedAt: new Date("2026-07-28T16:00:00+09:00"),
+      },
+      krxQuote: {
+        code: "005930",
+        marketCode: "J",
+        price: 222_000,
+        change: -32_000,
+        changeRate: -12.6,
+        changeDirection: "down",
+        requestedAt: new Date("2026-07-28T16:00:00+09:00"),
+      },
+    }).toJSON();
+
+    expect(embed.description).toContain("NXT 애프터마켓: 222,500원");
+    expect(embed.fields?.[0]).toMatchObject({ name: "NXT 애프터마켓" });
+  });
+
+  it("NXT 마감 뒤에는 마지막 가격을 NXT 종가로 표시한다", () => {
+    const embed = buildQuoteEmbed({
+      resolvedName: "삼성전자",
+      nxtQuote: {
+        code: "005930",
+        marketCode: "NX",
+        price: 246_500,
+        change: 6_500,
+        changeRate: 2.71,
+        changeDirection: "up",
+        requestedAt: new Date("2026-08-05T20:37:00+09:00"),
+      },
+      krxQuote: {
+        code: "005930",
+        marketCode: "J",
+        price: 246_000,
+        change: 6_000,
+        changeRate: 2.5,
+        changeDirection: "up",
+        requestedAt: new Date("2026-08-05T20:37:00+09:00"),
+      },
+    }).toJSON();
+
+    expect(embed.description).toContain("NXT 종가: 246,500원");
+    expect(embed.fields?.[0]).toMatchObject({ name: "NXT 종가" });
   });
 });
 

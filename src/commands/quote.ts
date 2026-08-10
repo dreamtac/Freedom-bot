@@ -19,6 +19,7 @@ import {
   getOverseasStockCandidates,
   suggestOverseasStocks,
 } from "../sources/overseas-stocks.js";
+import { getNxtMarketSession } from "../sources/nxt-market-session.js";
 import { getUsMarketSession } from "../sources/us-market-session.js";
 import type { BotCommand } from "./types.js";
 
@@ -213,7 +214,7 @@ interface QuoteEmbedInput {
   resolvedName?: string;
 }
 
-function buildQuoteEmbed({
+export function buildQuoteEmbed({
   krxQuote,
   nxtQuote,
   nxtError,
@@ -221,7 +222,9 @@ function buildQuoteEmbed({
   query,
   resolvedName,
 }: QuoteEmbedInput): EmbedBuilder {
-  const primaryQuote = nxtQuote ?? krxQuote;
+  const visibleNxtQuote = shouldDisplayNxtQuote(nxtQuote, krxQuote);
+  const visibleNxtError = visibleNxtQuote || !krxQuote ? nxtError : undefined;
+  const primaryQuote = visibleNxtQuote ?? krxQuote ?? nxtQuote;
   if (!primaryQuote) {
     throw new KisApiError("표시할 시세가 없습니다.");
   }
@@ -230,9 +233,9 @@ function buildQuoteEmbed({
   const embed = new EmbedBuilder()
     .setColor(getQuoteColor(primaryQuote))
     .setTitle(`${displayName} (${primaryQuote.code})`)
-    .setDescription(buildSummaryDescription(krxQuote, nxtQuote, nxtError))
+    .setDescription(buildSummaryDescription(krxQuote, visibleNxtQuote, visibleNxtError))
     .addFields(
-      ...buildQuoteFields(nxtQuote, krxQuote, nxtError, investorFlow),
+      ...buildQuoteFields(visibleNxtQuote, krxQuote, visibleNxtError, investorFlow),
       ...buildMetaFields(primaryQuote, query, resolvedName),
     )
     .setFooter({
@@ -284,17 +287,17 @@ function buildSummaryDescription(
 ): string {
   const lines: string[] = [];
   if (nxtQuote) {
-    lines.push(`**NXT 애프터장: ${formatWon(nxtQuote.price)}**`);
+    lines.push(`**${getNxtQuoteLabel(nxtQuote)}: ${formatWon(nxtQuote.price)}**`);
     lines.push(formatDirection(nxtQuote));
   } else if (nxtError) {
     lines.push(`NXT 시세를 가져오지 못했습니다: ${nxtError.message}`);
-  } else {
-    lines.push("NXT 시세가 없습니다.");
   }
 
   if (krxQuote) {
-    lines.push("");
-    lines.push(`KRX 정규장: ${formatWon(krxQuote.price)}`);
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(`**KRX 정규장: ${formatWon(krxQuote.price)}**`);
     lines.push(formatDirection(krxQuote));
   }
 
@@ -310,6 +313,27 @@ function buildSummaryDescription(
   return lines.join("\n");
 }
 
+function shouldDisplayNxtQuote(
+  nxtQuote: KisStockQuote | undefined,
+  krxQuote: KisStockQuote | undefined,
+): KisStockQuote | undefined {
+  if (!nxtQuote) {
+    return undefined;
+  }
+
+  const session = getNxtMarketSession(nxtQuote.requestedAt);
+  if (
+    session.kind === "pre" ||
+    session.kind === "after" ||
+    session.kind === "closed" ||
+    !krxQuote
+  ) {
+    return nxtQuote;
+  }
+
+  return undefined;
+}
+
 function buildQuoteFields(
   nxtQuote?: KisStockQuote,
   krxQuote?: KisStockQuote,
@@ -320,13 +344,13 @@ function buildQuoteFields(
 
   if (nxtQuote) {
     fields.push({
-      name: "NXT 애프터장",
+      name: getNxtQuoteLabel(nxtQuote),
       value: formatQuoteDetail(nxtQuote),
       inline: false,
     });
   } else if (nxtError) {
     fields.push({
-      name: "NXT 애프터장",
+      name: "NXT 시세",
       value: `조회 실패: ${nxtError.message}`,
       inline: false,
     });
@@ -349,6 +373,11 @@ function buildQuoteFields(
   }
 
   return fields;
+}
+
+function getNxtQuoteLabel(quote: KisStockQuote): string {
+  const session = getNxtMarketSession(quote.requestedAt);
+  return session.kind === "closed" ? "NXT 종가" : session.label;
 }
 
 function formatInvestorFlow(flow: KisDomesticInvestorFlow): string {

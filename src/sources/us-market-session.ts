@@ -14,7 +14,11 @@ export interface UsMarketSession {
 
 export function getUsMarketSession(now = new Date()): UsMarketSession {
   const korean = getMarketClock(now, "Asia/Seoul");
-  if (isWeekday(korean.weekday) && korean.minutes >= 10 * 60 && korean.minutes < 17 * 60) {
+  if (
+    isUsTradingDay(getKoreanTradingDate(now)) &&
+    korean.minutes >= 10 * 60 &&
+    korean.minutes < 17 * 60
+  ) {
     return {
       kind: "day",
       label: "데이장",
@@ -24,7 +28,8 @@ export function getUsMarketSession(now = new Date()): UsMarketSession {
   }
 
   const eastern = getMarketClock(now, "America/New_York");
-  if (!isWeekday(eastern.weekday)) {
+  const tradingDate = getUsTradingDate(now);
+  if (!isUsTradingDay(tradingDate)) {
     return {
       kind: "closed",
       label: "휴장",
@@ -40,7 +45,9 @@ export function getUsMarketSession(now = new Date()): UsMarketSession {
       localTime: eastern.time,
     };
   }
-  if (eastern.minutes >= 9 * 60 + 30 && eastern.minutes < 16 * 60) {
+  const regularClose = isUsEarlyCloseDay(tradingDate) ? 13 * 60 : 16 * 60;
+  const afterClose = isUsEarlyCloseDay(tradingDate) ? 17 * 60 : 20 * 60;
+  if (eastern.minutes >= 9 * 60 + 30 && eastern.minutes < regularClose) {
     return {
       kind: "regular",
       label: "정규장",
@@ -48,7 +55,7 @@ export function getUsMarketSession(now = new Date()): UsMarketSession {
       localTime: eastern.time,
     };
   }
-  if (eastern.minutes >= 16 * 60 && eastern.minutes < 20 * 60) {
+  if (eastern.minutes >= regularClose && eastern.minutes < afterClose) {
     return {
       kind: "after",
       label: "애프터장",
@@ -87,6 +94,9 @@ function getMarketClock(now: Date, timeZone: UsMarketSession["timeZone"]): {
   };
 }
 
-function isWeekday(weekday: string): boolean {
-  return weekday !== "Sat" && weekday !== "Sun";
-}
+import {
+  getKoreanTradingDate,
+  getUsTradingDate,
+  isUsEarlyCloseDay,
+  isUsTradingDay,
+} from "./market-calendar.js";

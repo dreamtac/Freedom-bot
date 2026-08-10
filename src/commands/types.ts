@@ -6,11 +6,16 @@ import type {
   SlashCommandSubcommandsOnlyBuilder,
 } from "discord.js";
 import type { KisConfig } from "../config.js";
+import type { KisRealtimeStatus } from "../sources/kis-realtime.js";
 import type { PriceAlertStore } from "../storage/price-alert-store.js";
 import type { StockStore } from "../storage/stock-store.js";
 
 export interface PriceAlertRefresher {
   refresh(): void;
+}
+
+export interface RealtimeStatusProvider {
+  getStatus(): KisRealtimeStatus;
 }
 
 export interface BotCommand {
@@ -33,5 +38,6 @@ export interface BotCommandContext {
   notificationChannelId?: string;
   priceAlertMonitor?: PriceAlertRefresher;
   priceAlertStore?: PriceAlertStore;
+  realtimeStatusProvider?: RealtimeStatusProvider;
   stockStore?: StockStore;
 }

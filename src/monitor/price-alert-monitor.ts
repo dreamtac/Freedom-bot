@@ -8,7 +8,13 @@ import type {
 } from "../sources/kis-realtime.js";
 import { getCurrentKospi200NightFuturesContract } from "../sources/krx-night-futures.js";
 import {
+  getKoreanTradingDate,
+  getPreviousKoreanTradingDate,
+  isKoreanTradingDay,
+} from "../sources/market-calendar.js";
+import {
   NIGHT_FUTURES_ALERT_THRESHOLDS,
+  MAX_PRICE_ALERT_STOCKS,
   PRICE_ALERT_THRESHOLDS,
   type PriceAlertDirection,
   type PriceAlertStock,
@@ -16,6 +22,8 @@ import {
 } from "../storage/price-alert-store.js";
 
 const RECONNECT_DELAY_MS = 5_000;
+const NXT_CLOSE_FLUSH_INTERVAL_MS = 5_000;
+const tradingDateFormatters = new Map<string, Intl.DateTimeFormat>();
 
 interface RealtimePriceSource {
   streamPriceAlerts(
@@ -25,17 +33,17 @@ interface RealtimePriceSource {
   ): Promise<void>;
 }
 
-interface OpeningPriceSource {
+interface NxtClosePriceSource {
   fetchDomesticQuote(
     code: string,
-    marketCode: "J",
-  ): Promise<{ open?: number }>;
+    marketCode: "NX",
+  ): Promise<{ businessDate?: string; price: number }>;
 }
 
 export interface PriceAlertMonitorOptions {
   channelId: string;
   client: Client;
-  openingPriceSource?: OpeningPriceSource;
+  nxtClosePriceSource?: NxtClosePriceSource;
   realtimeClient: RealtimePriceSource;
   store: PriceAlertStore;
 }
@@ -43,27 +51,40 @@ export interface PriceAlertMonitorOptions {
 export class PriceAlertMonitor {
   readonly #channelId: string;
   readonly #client: Client;
-  readonly #openingPriceSource: OpeningPriceSource | undefined;
+  readonly #nxtClosePriceSource: NxtClosePriceSource | undefined;
   readonly #realtimeClient: RealtimePriceSource;
   readonly #store: PriceAlertStore;
+  readonly #notifiedEventKeys = new Set<string>();
   readonly #pendingEventKeys = new Set<string>();
+  readonly #pendingNxtClosingPrices = new Map<
+    string,
+    { code: string; price: number; tradingDate: string }
+  >();
+  readonly #nxtCloseCaptureAttempts = new Set<string>();
+  readonly #stocksByCode = new Map<string, PriceAlertStock>();
+  readonly #domesticReferencePrices = new Map<
+    string,
+    { label: string; price: number } | null
+  >();
   #abortController: AbortController | undefined;
   #reconnectTimer: NodeJS.Timeout | undefined;
   #sessionTimer: NodeJS.Timeout | undefined;
+  #nxtCloseFlushTimer: NodeJS.Timeout | undefined;
   #activeDomesticMarket: RealtimeMarket | undefined;
   #activeNightFuturesSession = false;
+  #nightFuturesAlertEnabled = false;
   #stopped = true;
 
   constructor({
     channelId,
     client,
-    openingPriceSource,
+    nxtClosePriceSource,
     realtimeClient,
     store,
   }: PriceAlertMonitorOptions) {
     this.#channelId = channelId;
     this.#client = client;
-    this.#openingPriceSource = openingPriceSource;
+    this.#nxtClosePriceSource = nxtClosePriceSource;
     this.#realtimeClient = realtimeClient;
     this.#store = store;
   }
@@ -79,6 +100,11 @@ export class PriceAlertMonitor {
 
   stop(): void {
     this.#stopped = true;
+    if (this.#nxtCloseFlushTimer) {
+      clearTimeout(this.#nxtCloseFlushTimer);
+      this.#nxtCloseFlushTimer = undefined;
+    }
+    this.#flushNxtClosingPrices();
     this.#abortController?.abort();
     this.#abortController = undefined;
     if (this.#reconnectTimer) {
@@ -100,6 +126,7 @@ export class PriceAlertMonitor {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = undefined;
     }
+    this.#flushNxtClosingPrices();
     this.#abortController?.abort();
     this.#scheduleSessionRefresh();
     void this.#connect();
@@ -107,14 +134,27 @@ export class PriceAlertMonitor {
 
   async #connect(): Promise<void> {
     const stocks = this.#store.list();
+    this.#stocksByCode.clear();
+    for (const stock of stocks) {
+      this.#stocksByCode.set(stock.code, stock);
+    }
+    this.#domesticReferencePrices.clear();
     if (this.#stopped) {
       return;
     }
 
     const domesticMarket = getActiveRealtimeMarket();
     this.#activeDomesticMarket = domesticMarket;
+    const nightFuturesAlertEnabled = this.#store.isNightFuturesAlertEnabled();
+    this.#nightFuturesAlertEnabled = nightFuturesAlertEnabled;
+    const hasNightFuturesCapacity = stocks.length < MAX_PRICE_ALERT_STOCKS;
     const shouldWatchNightFutures =
-      this.#store.isNightFuturesAlertEnabled() && isKrxNightFuturesSession();
+      nightFuturesAlertEnabled && hasNightFuturesCapacity && isKrxNightFuturesSession();
+    if (nightFuturesAlertEnabled && !hasNightFuturesCapacity) {
+      console.error(
+        "KOSPI 야간선물 실시간 알림을 구독하지 않았습니다. KIS WebSocket은 최대 40개까지만 구독할 수 있습니다.",
+      );
+    }
     this.#activeNightFuturesSession = shouldWatchNightFutures;
     let nightFuturesCode: string | undefined;
     if (shouldWatchNightFutures) {
@@ -125,6 +165,10 @@ export class PriceAlertMonitor {
       }
     }
 
+    void this.#captureNxtClosesAfterMarket(stocks).catch((error: unknown) => {
+      console.error("NXT 기준가 보완 조회에 실패했습니다.", error);
+    });
+
     const subscriptions = getSubscriptions(stocks, domesticMarket, nightFuturesCode);
     if (subscriptions.length === 0) {
       return;
@@ -133,7 +177,6 @@ export class PriceAlertMonitor {
     const controller = new AbortController();
     this.#abortController = controller;
     try {
-      await this.#prepareOpeningPrices(stocks, domesticMarket);
       if (this.#stopped || controller.signal.aborted) {
         return;
       }
@@ -167,7 +210,7 @@ export class PriceAlertMonitor {
       return;
     }
 
-    const stock = this.#store.get(tick.code);
+    const stock = this.#stocksByCode.get(tick.code);
     if (!stock || stock.assetType !== tick.assetType) {
       return;
     }
@@ -175,14 +218,13 @@ export class PriceAlertMonitor {
     const tradingDate = getTradingDate(
       tick.assetType === "overseas" ? "America/New_York" : "Asia/Seoul",
     );
-    let openingPrice = this.#store.getOpeningPrice(stock?.code ?? tick.code, tradingDate);
-    if ((tick.market === "KRX" || tick.assetType === "overseas") && tick.open > 0) {
-      openingPrice = tick.open;
-      this.#store.saveOpeningPrice(tick.code, tradingDate, openingPrice);
+    const reference = this.#getReferencePrice(stock, tick, tradingDate);
+    if (!reference) {
+      return;
     }
 
-    const rate = getOpeningPriceChangeRate(tick.price, openingPrice ?? 0);
-    if (rate === undefined || openingPrice === undefined) {
+    const rate = getReferencePriceChangeRate(tick.price, reference.price);
+    if (rate === undefined) {
       return;
     }
 
@@ -199,14 +241,19 @@ export class PriceAlertMonitor {
         threshold,
       };
       const eventKey = `${event.code}:${event.tradingDate}:${event.direction}:${event.threshold}`;
-      if (this.#pendingEventKeys.has(eventKey) || this.#store.hasNotified(event)) {
+      if (this.#pendingEventKeys.has(eventKey) || this.#notifiedEventKeys.has(eventKey)) {
+        continue;
+      }
+      if (this.#store.hasNotified(event)) {
+        this.#notifiedEventKeys.add(eventKey);
         continue;
       }
 
       this.#pendingEventKeys.add(eventKey);
       try {
-        await this.#sendAlert(stock, tick, openingPrice, rate, direction, threshold);
+        await this.#sendAlert(stock, tick, reference, rate, direction, threshold);
         this.#store.markNotified(event);
+        this.#notifiedEventKeys.add(eventKey);
       } catch (error: unknown) {
         console.error("주가 변동 알림 전송에 실패했습니다.", error);
       } finally {
@@ -216,7 +263,7 @@ export class PriceAlertMonitor {
   }
 
   async #handleNightFuturesTick(tick: KisRealtimeTick): Promise<void> {
-    if (!this.#store.isNightFuturesAlertEnabled() || tick.changeRate === undefined) {
+    if (!this.#nightFuturesAlertEnabled || tick.changeRate === undefined) {
       return;
     }
 
@@ -237,8 +284,12 @@ export class PriceAlertMonitor {
       const eventKey = `night-futures:${tradingDate}:${direction}:${threshold}`;
       if (
         this.#pendingEventKeys.has(eventKey) ||
-        this.#store.hasNightFuturesNotified(event)
+        this.#notifiedEventKeys.has(eventKey)
       ) {
+        continue;
+      }
+      if (this.#store.hasNightFuturesNotified(event)) {
+        this.#notifiedEventKeys.add(eventKey);
         continue;
       }
 
@@ -252,12 +303,13 @@ export class PriceAlertMonitor {
           direction,
           market: "KRX_NIGHT_FUTURES",
           name: "KOSPI 야간선물",
-          openingPrice: basePrice,
+          referencePrice: basePrice,
           referenceLabel: "기준가격",
           rate,
           threshold,
         });
         this.#store.markNightFuturesNotified(event);
+        this.#notifiedEventKeys.add(eventKey);
       } catch (error: unknown) {
         console.error("KOSPI 야간선물 변동 알림 전송에 실패했습니다.", error);
       } finally {
@@ -269,7 +321,7 @@ export class PriceAlertMonitor {
   async #sendAlert(
     stock: PriceAlertStock,
     tick: KisRealtimeTick,
-    openingPrice: number,
+    reference: { label: string; price: number },
     rate: number,
     direction: PriceAlertDirection,
     threshold: number,
@@ -282,35 +334,136 @@ export class PriceAlertMonitor {
       direction,
       market: tick.market,
       name: stock.name,
-      openingPrice,
-      referenceLabel: "시가",
+      referencePrice: reference.price,
+      referenceLabel: reference.label,
       rate,
       threshold,
     });
   }
 
-  async #prepareOpeningPrices(
+  #getReferencePrice(
+    stock: PriceAlertStock,
+    tick: KisRealtimeTick,
+    tradingDate: string,
+  ): { label: string; price: number } | undefined {
+    if (stock.assetType === "domestic") {
+      if (tick.market === "NXT" && tick.price > 0) {
+        this.#queueNxtClosingPrice(stock.code, tradingDate, tick.price);
+      }
+      const referenceKey = `${stock.code}:${tradingDate}`;
+      if (this.#domesticReferencePrices.has(referenceKey)) {
+        return this.#domesticReferencePrices.get(referenceKey) ?? undefined;
+      }
+
+      const previousNxtClose = this.#store.getLatestNxtClosingPriceBefore(
+        stock.code,
+        tradingDate,
+      );
+      const expectedTradingDate = getPreviousKoreanTradingDate(tradingDate);
+      const reference = previousNxtClose && previousNxtClose.tradingDate === expectedTradingDate
+        ? { label: "전일 NXT 종가", price: previousNxtClose.price }
+        : null;
+      this.#domesticReferencePrices.set(referenceKey, reference);
+      return reference ?? undefined;
+    }
+
+    if (tick.open <= 0) {
+      return undefined;
+    }
+    return { label: "시가", price: tick.open };
+  }
+
+  async #captureNxtClosesAfterMarket(
     stocks: readonly PriceAlertStock[],
-    market: RealtimeMarket | undefined,
   ): Promise<void> {
-    if (market !== "NXT" || !this.#openingPriceSource) {
+    const source = this.#nxtClosePriceSource;
+    if (!source) {
       return;
     }
 
-    const tradingDate = getTradingDate("Asia/Seoul");
-    for (const stock of stocks.filter((stock) => stock.assetType === "domestic")) {
-      if (this.#store.getOpeningPrice(stock.code, tradingDate) !== undefined) {
-        continue;
+    const tradingDate = getKoreanTradingDate();
+    const previousTradingDate = getPreviousKoreanTradingDate(tradingDate);
+    const captureCurrentClose = isNxtCloseCaptureWindow();
+    const domesticStocks = stocks.filter((stock) => stock.assetType === "domestic");
+    await runWithConcurrency(domesticStocks, 3, async (stock) => {
+      const needsPreviousClose = previousTradingDate !== undefined &&
+        this.#store.getNxtClosingPrice(stock.code, previousTradingDate) === undefined;
+      const needsCurrentClose = captureCurrentClose &&
+        this.#store.getNxtClosingPrice(stock.code, tradingDate) === undefined;
+      if (!needsPreviousClose && !needsCurrentClose) {
+        return;
       }
 
+      const captureKey = `${stock.code}:${tradingDate}:${captureCurrentClose ? "close" : "reference"}`;
+      if (
+        this.#nxtCloseCaptureAttempts.has(captureKey)
+      ) {
+        return;
+      }
+      this.#nxtCloseCaptureAttempts.add(captureKey);
+
       try {
-        const quote = await this.#openingPriceSource.fetchDomesticQuote(stock.code, "J");
-        if (quote.open !== undefined && quote.open > 0) {
-          this.#store.saveOpeningPrice(stock.code, tradingDate, quote.open);
+        const quote = await source.fetchDomesticQuote(stock.code, "NX");
+        const quoteTradingDate = normalizeTradingDate(quote.businessDate);
+        const validPreviousClose = quoteTradingDate === previousTradingDate;
+        const validCurrentClose = captureCurrentClose && quoteTradingDate === tradingDate;
+        if (!validPreviousClose && !validCurrentClose) {
+          console.warn(
+            `NXT 종가를 저장하지 않았습니다: ${stock.code}의 거래일을 확인할 수 없습니다.`,
+          );
+          return;
+        }
+        if (quote.price > 0 && quoteTradingDate) {
+          this.#store.saveNxtClosingPrice(stock.code, quoteTradingDate, quote.price);
+          if (validPreviousClose) {
+            this.#domesticReferencePrices.delete(`${stock.code}:${tradingDate}`);
+          }
         }
       } catch (error: unknown) {
-        console.error(`KRX 시가를 가져오지 못했습니다: ${stock.code}`, error);
+        console.error(`NXT 종가를 가져오지 못했습니다: ${stock.code}`, error);
       }
+    });
+  }
+
+  #queueNxtClosingPrice(code: string, tradingDate: string, price: number): void {
+    const key = `${code}:${tradingDate}`;
+    this.#pendingNxtClosingPrices.set(key, { code, price, tradingDate });
+    this.#scheduleNxtCloseFlush();
+  }
+
+  #scheduleNxtCloseFlush(): void {
+    if (this.#nxtCloseFlushTimer) {
+      return;
+    }
+
+    this.#nxtCloseFlushTimer = setTimeout(() => {
+      this.#nxtCloseFlushTimer = undefined;
+      this.#flushNxtClosingPrices();
+    }, NXT_CLOSE_FLUSH_INTERVAL_MS);
+  }
+
+  #flushNxtClosingPrices(): void {
+    if (this.#pendingNxtClosingPrices.size === 0) {
+      return;
+    }
+
+    const pendingPrices = [...this.#pendingNxtClosingPrices.entries()];
+    this.#pendingNxtClosingPrices.clear();
+    for (const [key, pendingPrice] of pendingPrices) {
+      try {
+        this.#store.saveNxtClosingPrice(
+          pendingPrice.code,
+          pendingPrice.tradingDate,
+          pendingPrice.price,
+        );
+      } catch (error: unknown) {
+        console.error(`NXT 종가를 저장하지 못했습니다: ${pendingPrice.code}`, error);
+        this.#pendingNxtClosingPrices.set(key, pendingPrice);
+      }
+    }
+
+    if (this.#pendingNxtClosingPrices.size > 0 && !this.#stopped) {
+      this.#scheduleNxtCloseFlush();
     }
   }
 
@@ -337,7 +490,7 @@ export class PriceAlertMonitor {
   }
 }
 
-export function getOpeningPriceChangeRate(
+export function getReferencePriceChangeRate(
   price: number,
   openingPrice: number,
 ): number | undefined {
@@ -349,14 +502,27 @@ export function getOpeningPriceChangeRate(
 }
 
 function getTradingDate(timeZone: string, now = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
+  let formatter = tradingDateFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    tradingDateFormatters.set(timeZone, formatter);
+  }
+  const parts = formatter.formatToParts(now);
   const valueByType = new Map(parts.map((part) => [part.type, part.value]));
   return `${valueByType.get("year") ?? ""}${valueByType.get("month") ?? ""}${valueByType.get("day") ?? ""}`;
+}
+
+function normalizeTradingDate(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replaceAll(/[^0-9]/g, "");
+  return /^\d{8}$/.test(normalized) ? normalized : undefined;
 }
 
 function getSubscriptions(
@@ -403,10 +569,6 @@ function getKrxNightFuturesTradingDate(now = new Date()): string {
 }
 
 function isKrxNightFuturesSession(now = new Date()): boolean {
-  const weekday = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Seoul",
-    weekday: "short",
-  }).format(now);
   const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Seoul",
     hour: "2-digit",
@@ -418,17 +580,31 @@ function isKrxNightFuturesSession(now = new Date()): boolean {
     .map(Number);
   const minuteOfDay = (hour ?? 0) * 60 + (minute ?? 0);
   if (minuteOfDay >= 18 * 60) {
-    return weekday !== "Sat" && weekday !== "Sun";
+    return isKoreanTradingDay(getKoreanTradingDate(now));
   }
-  return minuteOfDay < 6 * 60 && weekday !== "Sun" && weekday !== "Mon";
+  return minuteOfDay < 6 * 60 && isKoreanTradingDay(
+    getKoreanTradingDate(new Date(now.getTime() - 24 * 60 * 60 * 1000)),
+  );
+}
+
+function isNxtCloseCaptureWindow(now = new Date()): boolean {
+  if (!isKoreanTradingDay(getKoreanTradingDate(now))) {
+    return false;
+  }
+  const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+  })
+    .format(now)
+    .split(":")
+    .map(Number);
+  return (hour ?? 0) * 60 + (minute ?? 0) >= 20 * 60;
 }
 
 function getActiveRealtimeMarket(now = new Date()): RealtimeMarket | undefined {
-  const weekday = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Seoul",
-    weekday: "short",
-  }).format(now);
-  if (weekday === "Sat" || weekday === "Sun") {
+  if (!isKoreanTradingDay(getKoreanTradingDate(now))) {
     return undefined;
   }
 
@@ -451,4 +627,25 @@ function getActiveRealtimeMarket(now = new Date()): RealtimeMarket | undefined {
     return "NXT";
   }
   return undefined;
+}
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  operation: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex];
+        nextIndex += 1;
+        if (item !== undefined) {
+          await operation(item);
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
 }

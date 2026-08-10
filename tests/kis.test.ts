@@ -43,6 +43,43 @@ describe("normalizeFuturesCode", () => {
 });
 
 describe("KisClient", () => {
+  it("동시에 시작된 요청은 접근 토큰 발급 하나를 공유한다", async () => {
+    let tokenRequests = 0;
+    let releaseToken: (() => void) | undefined;
+    const tokenGate = new Promise<void>((resolve) => {
+      releaseToken = resolve;
+    });
+    const fetchImpl = async (input: string | URL) => {
+      if (input.toString().endsWith("/oauth2/tokenP")) {
+        tokenRequests += 1;
+        await tokenGate;
+        return Response.json({ access_token: "shared-token", expires_in: 3600 });
+      }
+      return Response.json({
+        rt_cd: "0",
+        output: { stck_prpr: "100", stck_oprc: "100" },
+      });
+    };
+    const client = new KisClient(
+      {
+        appKey: "single-flight-app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+      },
+      fetchImpl,
+    );
+
+    const requests = [
+      client.fetchDomesticQuote("005930"),
+      client.fetchDomesticQuote("000660"),
+    ];
+    await Promise.resolve();
+    expect(tokenRequests).toBe(1);
+    releaseToken?.();
+    await expect(Promise.all(requests)).resolves.toHaveLength(2);
+    expect(tokenRequests).toBe(1);
+  });
+
   it("접근 토큰을 발급받아 국내 현재가를 조회한다", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (input: string | URL, init?: RequestInit) => {
@@ -95,6 +132,7 @@ describe("KisClient", () => {
     });
 
     expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.init?.signal instanceof AbortSignal)).toBe(true);
     expect(requests[1]?.url).toContain(
       "/uapi/domestic-stock/v1/quotations/inquire-price",
     );
@@ -123,6 +161,7 @@ describe("KisClient", () => {
         output: {
           hts_kor_isnm: "삼성전자",
           rprs_mrkt_kor_name: "NXT",
+          stck_bsop_date: "20260714",
           stck_prpr: "72100",
           prdy_vrss: "600",
           prdy_vrss_sign: "2",
@@ -143,6 +182,7 @@ describe("KisClient", () => {
     await expect(client.fetchDomesticQuote("005930", "NX")).resolves.toMatchObject({
       code: "005930",
       marketCode: "NX",
+      businessDate: "20260714",
       name: "삼성전자",
       marketName: "NXT",
       price: 72_100,
@@ -515,6 +555,66 @@ describe("KisClient", () => {
     expect(requests[1]?.init?.headers).toMatchObject({
       authorization: "Bearer test-news-access-token",
       tr_id: "FHKST01011800",
+    });
+  });
+
+  it("미국 종목별 최근 뉴스 제목을 조회한다", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+      requests.push({ url: input.toString(), init });
+
+      if (input.toString().endsWith("/oauth2/tokenP")) {
+        return Response.json({
+          access_token: "test-overseas-news-access-token",
+          expires_in: 3600,
+        });
+      }
+
+      return Response.json({
+        rt_cd: "0",
+        output1: [
+          {
+            news_key: "US-12345",
+            data_dt: "20260805",
+            data_tm: "091500",
+            class_cd: "10",
+            source: "Reuters",
+            symb: "NVDA",
+            title: "Nvidia shares rise after earnings outlook",
+          },
+        ],
+      });
+    };
+
+    const client = new KisClient(
+      {
+        appKey: "overseas-news-app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+      },
+      fetchImpl,
+    );
+
+    await expect(client.fetchOverseasNewsTitles("nvda", "NAS")).resolves.toEqual([
+      {
+        serialNumber: "US-12345",
+        date: "20260805",
+        time: "091500",
+        title: "Nvidia shares rise after earnings outlook",
+        categoryCode: "10",
+        source: "Reuters",
+      },
+    ]);
+
+    expect(requests[1]?.url).toContain(
+      "/uapi/overseas-price/v1/quotations/news-title",
+    );
+    expect(requests[1]?.url).toContain("NATION_CD=US");
+    expect(requests[1]?.url).toContain("EXCHANGE_CD=NAS");
+    expect(requests[1]?.url).toContain("SYMB=NVDA");
+    expect(requests[1]?.init?.headers).toMatchObject({
+      authorization: "Bearer test-overseas-news-access-token",
+      tr_id: "HHPSTH60100C1",
     });
   });
 });

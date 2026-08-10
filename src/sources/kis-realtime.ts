@@ -1,4 +1,5 @@
 import type { KisConfig } from "../config.js";
+import WebSocket from "ws";
 import { KisApiError, normalizeDomesticStockCode } from "./kis.js";
 import { normalizeOverseasStockSymbol } from "./overseas-stocks.js";
 import type { OverseasExchange } from "./overseas-stocks.js";
@@ -10,6 +11,10 @@ const OVERSEAS_TRADE_TR_ID = "HDFSCNT0";
 const KRX_NIGHT_FUTURES_TRADE_TR_ID = "H0MFCNT0";
 const SUBSCRIPTION_DELAY_MS = 120;
 const APPROVAL_KEY_SAFETY_MS = 60_000;
+const REALTIME_WATCHDOG_INTERVAL_MS = 30_000;
+export const KIS_REALTIME_INACTIVITY_TIMEOUT_MS = 2 * 60_000;
+const SUBSCRIPTION_CONFIRMATION_TIMEOUT_MS = 15_000;
+const KIS_APPROVAL_TIMEOUT_MS = 15_000;
 
 const DOMESTIC_TRADE_COLUMNS = [
   "code",
@@ -88,18 +93,21 @@ interface ApprovalKeyCache {
   expiresAt: number;
 }
 
+interface KisRealtimeSystemMessage {
+  key?: string;
+  message?: string;
+  resultCode?: string;
+  transactionId: string;
+}
+
 interface FetchLike {
   (input: string | URL, init?: RequestInit): Promise<Response>;
 }
 
-interface RealtimeWebSocket {
-  close(): void;
-  send(data: string): void;
-  onclose: ((event: CloseEvent) => void) | null;
-  onerror: ((event: Event) => void) | null;
-  onmessage: ((event: MessageEvent) => void) | null;
-  onopen: ((event: Event) => void) | null;
-}
+type RealtimeWebSocket = Pick<
+  WebSocket,
+  "close" | "pong" | "send" | "onclose" | "onerror" | "onmessage" | "onopen"
+>;
 
 type WebSocketFactory = (url: string) => RealtimeWebSocket;
 
@@ -124,14 +132,27 @@ export type KisRealtimeSubscription =
   | { assetType: "overseas"; symbol: string; exchange: OverseasExchange }
   | { assetType: "nightFutures"; code: string };
 
+export interface KisRealtimeStatus {
+  confirmedSubscriptions: number;
+  lastError?: string;
+  lastMessageAt?: number;
+  state: "connecting" | "connected" | "disconnected" | "error";
+  totalSubscriptions: number;
+}
+
 export class KisRealtimeClient {
   #approvalKeyCache?: ApprovalKeyCache;
+  #approvalKeyRequest: Promise<string> | undefined;
+  #status: KisRealtimeStatus = {
+    state: "disconnected",
+    confirmedSubscriptions: 0,
+    totalSubscriptions: 0,
+  };
 
   constructor(
     private readonly config: KisConfig,
     private readonly fetchImpl: FetchLike = globalThis.fetch,
-    private readonly webSocketFactory: WebSocketFactory = (url) =>
-      new WebSocket(url) as unknown as RealtimeWebSocket,
+    private readonly webSocketFactory: WebSocketFactory = (url) => new WebSocket(url),
   ) {}
 
   async streamDomesticTrades(
@@ -147,28 +168,80 @@ export class KisRealtimeClient {
     );
   }
 
+  getStatus(): KisRealtimeStatus {
+    return { ...this.#status };
+  }
+
   async streamPriceAlerts(
     subscriptions: readonly KisRealtimeSubscription[],
     onTick: (tick: KisRealtimeTick) => void | Promise<void>,
     signal: AbortSignal,
   ): Promise<void> {
     const normalizedSubscriptions = normalizeSubscriptions(subscriptions);
-    if (normalizedSubscriptions.length === 0 || signal.aborted) return;
+    if (normalizedSubscriptions.length === 0 || signal.aborted) {
+      this.#status = {
+        state: "disconnected",
+        confirmedSubscriptions: 0,
+        totalSubscriptions: 0,
+      };
+      return;
+    }
 
-    const approvalKey = await this.getApprovalKey();
+    let approvalKey: string;
+    try {
+      approvalKey = await this.getApprovalKey();
+    } catch (error: unknown) {
+      this.#status = {
+        state: "error",
+        confirmedSubscriptions: 0,
+        totalSubscriptions: normalizedSubscriptions.length,
+        ...(error instanceof Error ? { lastError: error.message } : {}),
+      };
+      throw error;
+    }
     if (signal.aborted) {
       return;
     }
 
+    this.#status = {
+      state: "connecting",
+      confirmedSubscriptions: 0,
+      totalSubscriptions: normalizedSubscriptions.length,
+    };
+
     await new Promise<void>((resolve, reject) => {
       const socket = this.webSocketFactory(`${this.config.websocketUrl}/tryitout`);
+      const expectedSubscriptionKeys = new Set(
+        normalizedSubscriptions.map(getSubscriptionKey),
+      );
+      const confirmedSubscriptionKeys = new Set<string>();
       let settled = false;
+      let lastMessageAt = Date.now();
+      let subscriptionConfirmationTimer: NodeJS.Timeout | undefined;
+      let watchdogTimer: NodeJS.Timeout | undefined;
+
+      const cleanup = (): void => {
+        if (subscriptionConfirmationTimer) {
+          clearTimeout(subscriptionConfirmationTimer);
+          subscriptionConfirmationTimer = undefined;
+        }
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = undefined;
+        }
+        signal.removeEventListener("abort", abort);
+      };
 
       const finish = (): void => {
         if (settled) {
           return;
         }
         settled = true;
+        cleanup();
+        this.#status = {
+          ...this.#status,
+          state: "disconnected",
+        };
         resolve();
       };
       const fail = (error: Error): void => {
@@ -176,22 +249,98 @@ export class KisRealtimeClient {
           return;
         }
         settled = true;
+        cleanup();
+        this.#status = {
+          ...this.#status,
+          state: "error",
+          lastError: error.message,
+        };
         reject(error);
       };
       const abort = (): void => {
         socket.close();
         finish();
       };
+      const failSubscription = (systemMessage: KisRealtimeSystemMessage): void => {
+        const subscription = systemMessage.key
+          ? `${systemMessage.transactionId}:${systemMessage.key}`
+          : systemMessage.transactionId;
+        fail(
+          new KisApiError(
+            `KIS 실시간 시세 구독이 거절되었습니다. (${subscription}) ${systemMessage.message ?? "알 수 없는 오류"}`,
+          ),
+        );
+        socket.close();
+      };
+      const confirmSubscription = (systemMessage: KisRealtimeSystemMessage): void => {
+        if (systemMessage.resultCode !== "0") {
+          failSubscription(systemMessage);
+          return;
+        }
+
+        const key = systemMessage.key
+          ? `${systemMessage.transactionId}:${systemMessage.key}`
+          : undefined;
+        if (!key || !expectedSubscriptionKeys.has(key)) {
+          return;
+        }
+        confirmedSubscriptionKeys.add(key);
+        this.#status = {
+          ...this.#status,
+          confirmedSubscriptions: confirmedSubscriptionKeys.size,
+        };
+        if (confirmedSubscriptionKeys.size === expectedSubscriptionKeys.size) {
+          if (subscriptionConfirmationTimer) {
+            clearTimeout(subscriptionConfirmationTimer);
+            subscriptionConfirmationTimer = undefined;
+          }
+          this.#status = {
+            ...this.#status,
+            state: "connected",
+          };
+        }
+      };
 
       signal.addEventListener("abort", abort, { once: true });
+      watchdogTimer = setInterval(() => {
+        if (settled || Date.now() - lastMessageAt < KIS_REALTIME_INACTIVITY_TIMEOUT_MS) {
+          return;
+        }
+
+        fail(
+          new KisApiError(
+            "KIS 실시간 시세 메시지가 2분 동안 수신되지 않아 재연결합니다.",
+          ),
+        );
+        socket.close();
+      }, REALTIME_WATCHDOG_INTERVAL_MS);
       socket.onopen = () => {
         void sendSubscriptions(
           socket,
           approvalKey,
           normalizedSubscriptions,
           signal,
-        ).catch(
-          (error: unknown) => {
+        )
+          .then(() => {
+            if (settled || confirmedSubscriptionKeys.size === expectedSubscriptionKeys.size) {
+              return;
+            }
+            subscriptionConfirmationTimer = setTimeout(() => {
+              const pendingSubscriptions = normalizedSubscriptions
+                .filter(
+                  (subscription) => !confirmedSubscriptionKeys.has(getSubscriptionKey(subscription)),
+                )
+                .map((subscription) => `${subscription.transactionId}:${subscription.key}`)
+                .join(", ");
+              fail(
+                new KisApiError(
+                  `KIS 실시간 시세 구독 확인이 시간 초과되었습니다. (${pendingSubscriptions})`,
+                ),
+              );
+              socket.close();
+            }, SUBSCRIPTION_CONFIRMATION_TIMEOUT_MS);
+          })
+          .catch((error: unknown) => {
             fail(
               error instanceof Error
                 ? error
@@ -202,8 +351,33 @@ export class KisRealtimeClient {
         );
       };
       socket.onmessage = (event) => {
+        lastMessageAt = Date.now();
+        this.#status = {
+          ...this.#status,
+          lastMessageAt,
+        };
         void toText(event.data).then((raw) => {
           if (!raw) {
+            return;
+          }
+
+          const systemMessage = parseKisRealtimeSystemMessage(raw);
+          if (systemMessage?.transactionId === "PINGPONG") {
+            // KIS sends an application-level heartbeat that requires a WebSocket PONG.
+            try {
+              socket.pong(raw);
+            } catch (error: unknown) {
+              fail(
+                error instanceof Error
+                  ? error
+                  : new KisApiError("KIS 실시간 PONG 응답에 실패했습니다."),
+              );
+              socket.close();
+            }
+            return;
+          }
+          if (systemMessage) {
+            confirmSubscription(systemMessage);
             return;
           }
 
@@ -212,6 +386,13 @@ export class KisRealtimeClient {
               console.error("KIS 실시간 시세 처리에 실패했습니다.", error);
             });
           }
+        }).catch((error: unknown) => {
+          fail(
+            error instanceof Error
+              ? error
+              : new KisApiError("KIS 실시간 시세 메시지를 처리하지 못했습니다."),
+          );
+          socket.close();
         });
       };
       socket.onerror = () => {
@@ -228,9 +409,25 @@ export class KisRealtimeClient {
       return this.#approvalKeyCache.approvalKey;
     }
 
+    if (this.#approvalKeyRequest) {
+      return this.#approvalKeyRequest;
+    }
+
+    const request = this.issueApprovalKey().finally(() => {
+      if (this.#approvalKeyRequest === request) {
+        this.#approvalKeyRequest = undefined;
+      }
+    });
+    this.#approvalKeyRequest = request;
+    return request;
+  }
+
+  private async issueApprovalKey(): Promise<string> {
+    const now = Date.now();
     const url = new URL(APPROVAL_PATH, this.config.baseUrl);
     const response = await this.fetchImpl(url, {
       method: "POST",
+      signal: AbortSignal.timeout(KIS_APPROVAL_TIMEOUT_MS),
       headers: {
         "content-type": "application/json",
       },
@@ -429,6 +626,10 @@ interface NormalizedRealtimeSubscription {
   key: string;
 }
 
+function getSubscriptionKey(subscription: NormalizedRealtimeSubscription): string {
+  return `${subscription.transactionId}:${subscription.key}`;
+}
+
 function normalizeSubscriptions(
   subscriptions: readonly KisRealtimeSubscription[],
 ): NormalizedRealtimeSubscription[] {
@@ -485,6 +686,45 @@ function getMarketFromTransactionId(
 
 function parseOverseasExchange(value: string | undefined): OverseasExchange | undefined {
   return value === "NAS" || value === "NYS" || value === "AMS" ? value : undefined;
+}
+
+function parseKisRealtimeSystemMessage(raw: string): KisRealtimeSystemMessage | undefined {
+  try {
+    const message: unknown = JSON.parse(raw);
+    if (!message || typeof message !== "object" || !("header" in message)) {
+      return undefined;
+    }
+
+    const { header } = message;
+    if (
+      !header ||
+      typeof header !== "object" ||
+      !("tr_id" in header) ||
+      typeof header.tr_id !== "string"
+    ) {
+      return undefined;
+    }
+    const body = "body" in message ? message.body : undefined;
+    const key = "tr_key" in header && typeof header.tr_key === "string"
+      ? header.tr_key
+      : undefined;
+    const resultCode =
+      body && typeof body === "object" && "rt_cd" in body && typeof body.rt_cd === "string"
+        ? body.rt_cd
+        : undefined;
+    const responseMessage =
+      body && typeof body === "object" && "msg1" in body && typeof body.msg1 === "string"
+        ? body.msg1
+        : undefined;
+    return {
+      transactionId: header.tr_id,
+      ...(key ? { key } : {}),
+      ...(resultCode ? { resultCode } : {}),
+      ...(responseMessage ? { message: responseMessage } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJsonResponse(response: Response): Promise<Record<string, unknown>> {
