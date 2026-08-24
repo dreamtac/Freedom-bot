@@ -11,6 +11,7 @@ import {
   getKoreanTradingDate,
   getPreviousKoreanTradingDate,
   isKoreanTradingDay,
+  isUsTradingDay,
 } from "../sources/market-calendar.js";
 import {
   NIGHT_FUTURES_ALERT_THRESHOLDS,
@@ -71,6 +72,7 @@ export class PriceAlertMonitor {
   #sessionTimer: NodeJS.Timeout | undefined;
   #nxtCloseFlushTimer: NodeJS.Timeout | undefined;
   #activeDomesticMarket: RealtimeMarket | undefined;
+  #activeOverseasSession: "day" | "standard" | undefined;
   #activeNightFuturesSession = false;
   #nightFuturesAlertEnabled = false;
   #stopped = true;
@@ -145,6 +147,10 @@ export class PriceAlertMonitor {
 
     const domesticMarket = getActiveRealtimeMarket();
     this.#activeDomesticMarket = domesticMarket;
+    const overseasSession = stocks.some((stock) => stock.assetType === "overseas")
+      ? getActiveOverseasRealtimeSession()
+      : undefined;
+    this.#activeOverseasSession = overseasSession;
     const nightFuturesAlertEnabled = this.#store.isNightFuturesAlertEnabled();
     this.#nightFuturesAlertEnabled = nightFuturesAlertEnabled;
     const hasNightFuturesCapacity = stocks.length < MAX_PRICE_ALERT_STOCKS;
@@ -169,7 +175,12 @@ export class PriceAlertMonitor {
       console.error("NXT 기준가 보완 조회에 실패했습니다.", error);
     });
 
-    const subscriptions = getSubscriptions(stocks, domesticMarket, nightFuturesCode);
+    const subscriptions = getSubscriptions(
+      stocks,
+      domesticMarket,
+      overseasSession,
+      nightFuturesCode,
+    );
     if (subscriptions.length === 0) {
       return;
     }
@@ -215,9 +226,9 @@ export class PriceAlertMonitor {
       return;
     }
 
-    const tradingDate = getTradingDate(
-      tick.assetType === "overseas" ? "America/New_York" : "Asia/Seoul",
-    );
+    const tradingDate = tick.assetType === "overseas"
+      ? normalizeTradingDate(tick.tradingDate) ?? getTradingDate("America/New_York")
+      : getTradingDate("Asia/Seoul");
     const reference = this.#getReferencePrice(stock, tick, tradingDate);
     if (!reference) {
       return;
@@ -478,8 +489,13 @@ export class PriceAlertMonitor {
       this.#sessionTimer = undefined;
       const nightFuturesSession =
         this.#store.isNightFuturesAlertEnabled() && isKrxNightFuturesSession();
+      const overseasSession = this.#stocksByCode.size > 0 &&
+          [...this.#stocksByCode.values()].some((stock) => stock.assetType === "overseas")
+        ? getActiveOverseasRealtimeSession()
+        : undefined;
       if (
         getActiveRealtimeMarket() !== this.#activeDomesticMarket ||
+        overseasSession !== this.#activeOverseasSession ||
         nightFuturesSession !== this.#activeNightFuturesSession
       ) {
         this.refresh();
@@ -528,12 +544,18 @@ function normalizeTradingDate(value: string | undefined): string | undefined {
 function getSubscriptions(
   stocks: readonly PriceAlertStock[],
   domesticMarket: RealtimeMarket | undefined,
+  overseasSession: "day" | "standard" | undefined,
   nightFuturesCode?: string,
 ): KisRealtimeSubscription[] {
   const stockSubscriptions = stocks.flatMap((stock): KisRealtimeSubscription[] => {
     if (stock.assetType === "overseas") {
       return stock.exchange
-        ? [{ assetType: "overseas", symbol: stock.code, exchange: stock.exchange }]
+        ? [{
+            assetType: "overseas",
+            symbol: stock.code,
+            exchange: stock.exchange,
+            session: overseasSession ?? "standard",
+          }]
         : [];
     }
     return domesticMarket
@@ -546,6 +568,25 @@ function getSubscriptions(
       ? [{ assetType: "nightFutures" as const, code: nightFuturesCode }]
       : []),
   ];
+}
+
+function getActiveOverseasRealtimeSession(now = new Date()): "day" | "standard" {
+  const tradingDate = getKoreanTradingDate(now);
+  if (!isUsTradingDay(tradingDate)) {
+    return "standard";
+  }
+
+  const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+  })
+    .format(now)
+    .split(":")
+    .map(Number);
+  const minuteOfDay = (hour ?? 0) * 60 + (minute ?? 0);
+  return minuteOfDay >= 10 * 60 && minuteOfDay < 16 * 60 ? "day" : "standard";
 }
 
 function getBasePrice(price: number, rate: number): number | undefined {

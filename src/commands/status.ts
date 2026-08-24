@@ -13,7 +13,10 @@ export const statusCommand: BotCommand = {
       ? [
           `KIS 실시간: ${formatConnectionState(realtimeStatus.state)}`,
           `구독: ${realtimeStatus.confirmedSubscriptions}/${realtimeStatus.totalSubscriptions}`,
-          `마지막 수신: ${formatLastMessageAt(realtimeStatus.lastMessageAt)}`,
+          `마지막 소켓 수신: ${formatLastMessageAt(realtimeStatus.lastMessageAt)}`,
+          `국내 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.domestic)}`,
+          `미국 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.overseas)}`,
+          `야간선물 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.nightFutures)}`,
           ...(realtimeStatus.lastError ? [`최근 오류: ${realtimeStatus.lastError}`] : []),
         ].join("\n")
       : "KIS 실시간: 비활성화";

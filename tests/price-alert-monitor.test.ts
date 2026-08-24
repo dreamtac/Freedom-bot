@@ -174,16 +174,73 @@ describe("PriceAlertMonitor", () => {
       vi.useRealTimers();
     }
   });
+
+  it("미국 종목이 시가 대비 임계값을 하락하면 디스코드 알림을 보낸다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-25T02:00:00.000Z"));
+    const store = await createStore();
+    store.add({
+      code: "SOXL",
+      name: "Direxion Daily Semiconductor Bull 3X Shares",
+      assetType: "overseas",
+      exchange: "NAS",
+    });
+    const send = vi.fn(async () => undefined);
+    const client = {
+      channels: {
+        fetch: vi.fn(async () => ({ isSendable: () => true, send })),
+      },
+    } as unknown as Client;
+    const realtimeClient = new FakeRealtimePriceSource();
+    const monitor = new PriceAlertMonitor({
+      channelId: "channel-id",
+      client,
+      realtimeClient,
+      store,
+    });
+
+    try {
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(realtimeClient.subscriptions).toContainEqual({
+        assetType: "overseas",
+        symbol: "SOXL",
+        exchange: "NAS",
+        session: "day",
+      });
+      await realtimeClient.onTick?.({
+        assetType: "overseas",
+        code: "SOXL",
+        market: "NAS",
+        open: 100,
+        price: 85,
+      });
+
+      expect(send).toHaveBeenCalledTimes(4);
+      expect(store.hasNotified({
+        code: "SOXL",
+        tradingDate: "20260824",
+        direction: "down",
+        threshold: 10,
+      })).toBe(true);
+    } finally {
+      monitor.stop();
+      store.close();
+      vi.useRealTimers();
+    }
+  });
 });
 
 class FakeRealtimePriceSource implements RealtimePriceSource {
   onTick: ((tick: KisRealtimeTick) => void | Promise<void>) | undefined;
+  subscriptions: readonly KisRealtimeSubscription[] = [];
 
   streamPriceAlerts(
-    _subscriptions: readonly KisRealtimeSubscription[],
+    subscriptions: readonly KisRealtimeSubscription[],
     onTick: (tick: KisRealtimeTick) => void | Promise<void>,
     signal: AbortSignal,
   ): Promise<void> {
+    this.subscriptions = subscriptions;
     this.onTick = onTick;
     return new Promise((resolve) => {
       signal.addEventListener("abort", resolve, { once: true });

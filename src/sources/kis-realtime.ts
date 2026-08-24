@@ -66,11 +66,11 @@ const DOMESTIC_TRADE_COLUMNS = [
 ] as const;
 
 const OVERSEAS_TRADE_COLUMNS = [
-  "rsym", "symbol", "exchange", "tradeDate", "businessDate", "tradeTime",
-  "previousDate", "previousTime", "open", "high", "low", "price", "sign",
+  "symbol", "decimalPlaces", "tradingDate", "localDate", "localTime",
+  "koreanDate", "koreanTime", "open", "high", "low", "price", "sign",
   "change", "changeRate", "bestBid", "bestAsk", "bidVolume", "askVolume",
-  "tradeVolume", "accumulatedVolume", "accumulatedAmount", "buyVolume",
-  "sellVolume", "marketType",
+  "tradeVolume", "accumulatedVolume", "accumulatedAmount", "sellVolume",
+  "buyVolume", "tradeStrength", "marketType",
 ] as const;
 
 const KRX_NIGHT_FUTURES_TRADE_COLUMNS = [
@@ -115,6 +115,7 @@ export interface KisRealtimeTick {
   code: string;
   market: RealtimeMarket | OverseasExchange | "KRX_NIGHT_FUTURES";
   assetType: "domestic" | "overseas" | "nightFutures";
+  tradingDate?: string;
   tradeTime?: string;
   price: number;
   open: number;
@@ -129,13 +130,19 @@ export type RealtimeMarket = "KRX" | "NXT";
 
 export type KisRealtimeSubscription =
   | { assetType: "domestic"; code: string; market: RealtimeMarket }
-  | { assetType: "overseas"; symbol: string; exchange: OverseasExchange }
+  | {
+      assetType: "overseas";
+      symbol: string;
+      exchange: OverseasExchange;
+      session?: "day" | "standard";
+    }
   | { assetType: "nightFutures"; code: string };
 
 export interface KisRealtimeStatus {
   confirmedSubscriptions: number;
   lastError?: string;
   lastMessageAt?: number;
+  lastTickAt?: Partial<Record<KisRealtimeTick["assetType"], number>>;
   state: "connecting" | "connected" | "disconnected" | "error";
   totalSubscriptions: number;
 }
@@ -169,7 +176,12 @@ export class KisRealtimeClient {
   }
 
   getStatus(): KisRealtimeStatus {
-    return { ...this.#status };
+    return {
+      ...this.#status,
+      ...(this.#status.lastTickAt
+        ? { lastTickAt: { ...this.#status.lastTickAt } }
+        : {}),
+    };
   }
 
   async streamPriceAlerts(
@@ -178,6 +190,13 @@ export class KisRealtimeClient {
     signal: AbortSignal,
   ): Promise<void> {
     const normalizedSubscriptions = normalizeSubscriptions(subscriptions);
+    const overseasExchangeBySymbol = new Map(
+      subscriptions.flatMap((subscription) =>
+        subscription.assetType === "overseas"
+          ? [[normalizeOverseasStockSymbol(subscription.symbol), subscription.exchange] as const]
+          : [],
+      ),
+    );
     if (normalizedSubscriptions.length === 0 || signal.aborted) {
       this.#status = {
         state: "disconnected",
@@ -381,7 +400,15 @@ export class KisRealtimeClient {
             return;
           }
 
-          for (const tick of parseRealtimeTradeMessage(raw)) {
+          const ticks = parseRealtimeTradeMessage(raw, overseasExchangeBySymbol);
+          if (ticks.length > 0) {
+            const lastTickAt = { ...this.#status.lastTickAt };
+            for (const tick of ticks) {
+              lastTickAt[tick.assetType] = lastMessageAt;
+            }
+            this.#status = { ...this.#status, lastTickAt };
+          }
+          for (const tick of ticks) {
             void Promise.resolve(onTick(tick)).catch((error: unknown) => {
               console.error("KIS 실시간 시세 처리에 실패했습니다.", error);
             });
@@ -495,7 +522,10 @@ export function parseDomesticTradeMessage(raw: string): KisRealtimeTick[] {
   return ticks;
 }
 
-export function parseOverseasTradeMessage(raw: string): KisRealtimeTick[] {
+export function parseOverseasTradeMessage(
+  raw: string,
+  exchangeBySymbol: ReadonlyMap<string, OverseasExchange>,
+): KisRealtimeTick[] {
   const parts = raw.split("|", 4);
   if (parts.length < 4 || parts[0] !== "0" || parts[1] !== OVERSEAS_TRADE_TR_ID) {
     return [];
@@ -507,8 +537,8 @@ export function parseOverseasTradeMessage(raw: string): KisRealtimeTick[] {
     const row = Object.fromEntries(
       OVERSEAS_TRADE_COLUMNS.map((column, offset) => [column, values[index + offset] ?? ""]),
     );
-    const code = row.symbol;
-    const market = parseOverseasExchange(row.exchange);
+    const code = row.symbol?.toUpperCase();
+    const market = code ? exchangeBySymbol.get(code) : undefined;
     const price = parseNumber(row.price);
     const open = parseNumber(row.open);
     if (!code || !market || price === undefined || open === undefined || price <= 0 || open <= 0) {
@@ -526,7 +556,8 @@ export function parseOverseasTradeMessage(raw: string): KisRealtimeTick[] {
       assetType: "overseas",
       price,
       open,
-      ...(row.tradeTime ? { tradeTime: row.tradeTime } : {}),
+      ...(row.tradingDate ? { tradingDate: row.tradingDate } : {}),
+      ...(row.localTime ? { tradeTime: row.localTime } : {}),
       ...(high !== undefined ? { high } : {}),
       ...(low !== undefined ? { low } : {}),
       ...(volume !== undefined ? { volume } : {}),
@@ -582,10 +613,13 @@ export function parseKrxNightFuturesTradeMessage(raw: string): KisRealtimeTick[]
   return ticks;
 }
 
-export function parseRealtimeTradeMessage(raw: string): KisRealtimeTick[] {
+export function parseRealtimeTradeMessage(
+  raw: string,
+  exchangeBySymbol: ReadonlyMap<string, OverseasExchange> = new Map(),
+): KisRealtimeTick[] {
   return [
     ...parseDomesticTradeMessage(raw),
-    ...parseOverseasTradeMessage(raw),
+    ...parseOverseasTradeMessage(raw, exchangeBySymbol),
     ...parseKrxNightFuturesTradeMessage(raw),
   ];
 }
@@ -648,10 +682,26 @@ function normalizeSubscriptions(
     }
     return {
       transactionId: OVERSEAS_TRADE_TR_ID,
-      key: `D${subscription.exchange}${normalizeOverseasStockSymbol(subscription.symbol)}`,
+      key: getOverseasSubscriptionKey(subscription),
     };
   });
   return [...new Map(normalized.map((item) => [`${item.transactionId}:${item.key}`, item])).values()];
+}
+
+function getOverseasSubscriptionKey(
+  subscription: Extract<KisRealtimeSubscription, { assetType: "overseas" }>,
+): string {
+  const symbol = normalizeOverseasStockSymbol(subscription.symbol);
+  if (subscription.session !== "day") {
+    return `D${subscription.exchange}${symbol}`;
+  }
+
+  const dayMarketCode: Record<OverseasExchange, string> = {
+    NAS: "BAQ",
+    NYS: "BAY",
+    AMS: "BAA",
+  };
+  return `R${dayMarketCode[subscription.exchange]}${symbol}`;
 }
 
 function normalizeNightFuturesCode(code: string): string {
@@ -682,10 +732,6 @@ function getMarketFromTransactionId(
     return "NXT";
   }
   return undefined;
-}
-
-function parseOverseasExchange(value: string | undefined): OverseasExchange | undefined {
-  return value === "NAS" || value === "NYS" || value === "AMS" ? value : undefined;
 }
 
 function parseKisRealtimeSystemMessage(raw: string): KisRealtimeSystemMessage | undefined {
