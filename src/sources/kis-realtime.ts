@@ -139,11 +139,13 @@ export type KisRealtimeSubscription =
   | { assetType: "nightFutures"; code: string };
 
 export interface KisRealtimeStatus {
+  confirmedSubscriptionKeys?: readonly string[];
   confirmedSubscriptions: number;
   lastError?: string;
   lastMessageAt?: number;
   lastTickAt?: Partial<Record<KisRealtimeTick["assetType"], number>>;
   state: "connecting" | "connected" | "disconnected" | "error";
+  subscriptionKeys?: readonly string[];
   totalSubscriptions: number;
 }
 
@@ -178,6 +180,12 @@ export class KisRealtimeClient {
   getStatus(): KisRealtimeStatus {
     return {
       ...this.#status,
+      ...(this.#status.subscriptionKeys
+        ? { subscriptionKeys: [...this.#status.subscriptionKeys] }
+        : {}),
+      ...(this.#status.confirmedSubscriptionKeys
+        ? { confirmedSubscriptionKeys: [...this.#status.confirmedSubscriptionKeys] }
+        : {}),
       ...(this.#status.lastTickAt
         ? { lastTickAt: { ...this.#status.lastTickAt } }
         : {}),
@@ -225,6 +233,8 @@ export class KisRealtimeClient {
     this.#status = {
       state: "connecting",
       confirmedSubscriptions: 0,
+      confirmedSubscriptionKeys: [],
+      subscriptionKeys: normalizedSubscriptions.map(getSubscriptionKey),
       totalSubscriptions: normalizedSubscriptions.length,
     };
 
@@ -307,6 +317,7 @@ export class KisRealtimeClient {
         this.#status = {
           ...this.#status,
           confirmedSubscriptions: confirmedSubscriptionKeys.size,
+          confirmedSubscriptionKeys: [...confirmedSubscriptionKeys],
         };
         if (confirmedSubscriptionKeys.size === expectedSubscriptionKeys.size) {
           if (subscriptionConfirmationTimer) {
@@ -548,8 +559,9 @@ export function parseOverseasTradeMessage(
     const high = parseNumber(row.high);
     const low = parseNumber(row.low);
     const volume = parseNumber(row.accumulatedVolume);
-    const change = parseNumber(row.change);
-    const changeRate = parseNumber(row.changeRate);
+    const rawChange = parseNumber(row.change);
+    const rawChangeRate = parseNumber(row.changeRate);
+    const direction = getChangeMultiplier(row.sign);
     ticks.push({
       code: code.toUpperCase(),
       market,
@@ -561,8 +573,10 @@ export function parseOverseasTradeMessage(
       ...(high !== undefined ? { high } : {}),
       ...(low !== undefined ? { low } : {}),
       ...(volume !== undefined ? { volume } : {}),
-      ...(change !== undefined ? { change } : {}),
-      ...(changeRate !== undefined ? { changeRate } : {}),
+      ...(rawChange !== undefined ? { change: Math.abs(rawChange) * direction } : {}),
+      ...(rawChangeRate !== undefined
+        ? { changeRate: Math.abs(rawChangeRate) * direction }
+        : {}),
     });
   }
   return ticks;

@@ -168,7 +168,7 @@ describe("KisRealtimeClient", () => {
     );
 
     const streaming = client.streamPriceAlerts(
-      [{ assetType: "overseas", symbol: "SOXL", exchange: "NAS" }],
+      [{ assetType: "overseas", symbol: "SOXL", exchange: "AMS" }],
       (tick) => ticks.push(tick),
       controller.signal,
     );
@@ -176,13 +176,13 @@ describe("KisRealtimeClient", () => {
     socket.open();
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     expect(JSON.parse(socket.sent[0] ?? "{}")).toMatchObject({
-      body: { input: { tr_id: "HDFSCNT0", tr_key: "DNASSOXL" } },
+      body: { input: { tr_id: "HDFSCNT0", tr_key: "DAMSSOXL" } },
     });
-    socket.message(createSubscriptionResponse("0", "정상처리 되었습니다.", "HDFSCNT0", "DNASSOXL"));
+    socket.message(createSubscriptionResponse("0", "정상처리 되었습니다.", "HDFSCNT0", "DAMSSOXL"));
     socket.message(createOverseasTradeMessage("SOXL", 85, 100));
 
     await vi.waitFor(() => expect(ticks).toMatchObject([
-      { assetType: "overseas", code: "SOXL", market: "NAS", price: 85, open: 100 },
+      { assetType: "overseas", code: "SOXL", market: "AMS", price: 85, open: 100 },
     ]));
     expect(client.getStatus().lastTickAt?.overseas).toBeTypeOf("number");
     controller.abort();
@@ -204,7 +204,7 @@ describe("KisRealtimeClient", () => {
     );
 
     const streaming = client.streamPriceAlerts(
-      [{ assetType: "overseas", symbol: "SOXL", exchange: "NAS", session: "day" }],
+      [{ assetType: "overseas", symbol: "SOXL", exchange: "AMS", session: "day" }],
       () => undefined,
       controller.signal,
     );
@@ -212,9 +212,9 @@ describe("KisRealtimeClient", () => {
     socket.open();
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     expect(JSON.parse(socket.sent[0] ?? "{}")).toMatchObject({
-      body: { input: { tr_id: "HDFSCNT0", tr_key: "RBAQSOXL" } },
+      body: { input: { tr_id: "HDFSCNT0", tr_key: "RBAASOXL" } },
     });
-    socket.message(createSubscriptionResponse("0", "정상처리 되었습니다.", "HDFSCNT0", "RBAQSOXL"));
+    socket.message(createSubscriptionResponse("0", "정상처리 되었습니다.", "HDFSCNT0", "RBAASOXL"));
     controller.abort();
     await streaming;
   });

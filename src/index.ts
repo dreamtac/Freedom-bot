@@ -46,6 +46,7 @@ async function startBot(): Promise<void> {
           client,
           nxtClosePriceSource: new KisClient(config.kis),
           realtimeClient,
+          stockMetadataSource: stockStore,
           store: priceAlertStore,
         })
       : undefined;

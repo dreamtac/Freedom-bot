@@ -15,7 +15,7 @@ import type { BotCommand } from './types.js';
 export const priceAlertCommand: BotCommand = {
     data: new SlashCommandBuilder()
         .setName('주가알림')
-        .setDescription('국내는 전일 NXT 종가, 미국은 시가 대비 등락률 알림을 관리합니다.')
+        .setDescription('국내는 전일 NXT 종가, 미국은 전일 종가 대비 등락률 알림을 관리합니다.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .setDMPermission(false)
         .addSubcommand(subcommand =>
@@ -129,7 +129,7 @@ export const priceAlertCommand: BotCommand = {
                 context.priceAlertMonitor?.refresh();
                 await interaction.reply({
                     content: added
-                        ? `${stock.name} (${stock.code})을 실시간 주가 알림에 추가했습니다. 국내는 전일 NXT 종가, 미국은 당일 시가 대비 +/-3%, 5%, 8%, 10% 돌파를 감시합니다.`
+                        ? `${stock.name} (${stock.code})을 실시간 주가 알림에 추가했습니다. 국내는 전일 NXT 종가, 미국은 전일 정규장 종가 대비 +/-3%, 5%, 8%, 10% 돌파를 감시합니다.`
                         : `${stock.name} (${stock.code})은 이미 실시간 주가 알림에 등록되어 있습니다.`,
                     flags: MessageFlags.Ephemeral,
                 });
@@ -231,7 +231,7 @@ function buildPriceAlertListEmbed(
         .setTitle('실시간 주가 알림 종목')
         .setDescription(description)
         .setFooter({
-            text: `${stocks.length}/${maximumStocks}종목 · 국내: 전일 NXT 종가 / 미국: 시가 대비 +/-3%, 5%, 8%, 10%`,
+            text: `${stocks.length}/${maximumStocks}종목 · 국내: 전일 NXT 종가 / 미국: 전일 종가 대비 +/-3%, 5%, 8%, 10%`,
         });
 }
 

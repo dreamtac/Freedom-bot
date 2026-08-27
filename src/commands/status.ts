@@ -9,6 +9,9 @@ export const statusCommand: BotCommand = {
 
   async execute(interaction, context) {
     const realtimeStatus = context.realtimeStatusProvider?.getStatus();
+    const overseasSubscriptions = realtimeStatus
+      ? getOverseasSubscriptionSummary(realtimeStatus)
+      : undefined;
     const kisStatus = realtimeStatus
       ? [
           `KIS 실시간: ${formatConnectionState(realtimeStatus.state)}`,
@@ -16,6 +19,7 @@ export const statusCommand: BotCommand = {
           `마지막 소켓 수신: ${formatLastMessageAt(realtimeStatus.lastMessageAt)}`,
           `국내 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.domestic)}`,
           `미국 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.overseas)}`,
+          ...(overseasSubscriptions ? [overseasSubscriptions] : []),
           `야간선물 시세: ${formatLastMessageAt(realtimeStatus.lastTickAt?.nightFutures)}`,
           ...(realtimeStatus.lastError ? [`최근 오류: ${realtimeStatus.lastError}`] : []),
         ].join("\n")
@@ -32,6 +36,24 @@ function formatConnectionState(state: "connecting" | "connected" | "disconnected
   if (state === "connecting") return "연결 중";
   if (state === "error") return "오류";
   return "연결 안 됨";
+}
+
+function getOverseasSubscriptionSummary(status: {
+  confirmedSubscriptionKeys?: readonly string[];
+  subscriptionKeys?: readonly string[];
+}): string | undefined {
+  const subscriptions = status.subscriptionKeys?.filter((key) => key.startsWith("HDFSCNT0:")) ?? [];
+  if (subscriptions.length === 0) {
+    return undefined;
+  }
+  const confirmed = new Set(status.confirmedSubscriptionKeys ?? []);
+  const confirmedSymbols = subscriptions
+    .filter((key) => confirmed.has(key))
+    .map((key) => key.split(":")[1]?.slice(4))
+    .filter((symbol): symbol is string => Boolean(symbol));
+  const visibleSymbols = confirmedSymbols.slice(0, 10).join(", ");
+  const remainder = confirmedSymbols.length > 10 ? ` 외 ${confirmedSymbols.length - 10}개` : "";
+  return `미국 구독: ${confirmedSymbols.length}/${subscriptions.length}${visibleSymbols ? ` (${visibleSymbols}${remainder})` : ""}`;
 }
 
 function formatLastMessageAt(lastMessageAt: number | undefined): string {

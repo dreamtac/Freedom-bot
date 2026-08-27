@@ -41,11 +41,20 @@ interface NxtClosePriceSource {
   ): Promise<{ businessDate?: string; price: number }>;
 }
 
+interface OverseasStockMetadataSource {
+  resolveOverseas(query: string): {
+    symbol: string;
+    name?: string;
+    exchange: NonNullable<PriceAlertStock["exchange"]>;
+  };
+}
+
 export interface PriceAlertMonitorOptions {
   channelId: string;
   client: Client;
   nxtClosePriceSource?: NxtClosePriceSource;
   realtimeClient: RealtimePriceSource;
+  stockMetadataSource?: OverseasStockMetadataSource;
   store: PriceAlertStore;
 }
 
@@ -54,6 +63,7 @@ export class PriceAlertMonitor {
   readonly #client: Client;
   readonly #nxtClosePriceSource: NxtClosePriceSource | undefined;
   readonly #realtimeClient: RealtimePriceSource;
+  readonly #stockMetadataSource: OverseasStockMetadataSource | undefined;
   readonly #store: PriceAlertStore;
   readonly #notifiedEventKeys = new Set<string>();
   readonly #pendingEventKeys = new Set<string>();
@@ -82,12 +92,14 @@ export class PriceAlertMonitor {
     client,
     nxtClosePriceSource,
     realtimeClient,
+    stockMetadataSource,
     store,
   }: PriceAlertMonitorOptions) {
     this.#channelId = channelId;
     this.#client = client;
     this.#nxtClosePriceSource = nxtClosePriceSource;
     this.#realtimeClient = realtimeClient;
+    this.#stockMetadataSource = stockMetadataSource;
     this.#store = store;
   }
 
@@ -135,7 +147,7 @@ export class PriceAlertMonitor {
   }
 
   async #connect(): Promise<void> {
-    const stocks = this.#store.list();
+    const stocks = this.#repairOverseasStockMetadata(this.#store.list());
     this.#stocksByCode.clear();
     for (const stock of stocks) {
       this.#stocksByCode.set(stock.code, stock);
@@ -378,10 +390,50 @@ export class PriceAlertMonitor {
       return reference ?? undefined;
     }
 
-    if (tick.open <= 0) {
+    if (tick.changeRate === undefined) {
       return undefined;
     }
-    return { label: "시가", price: tick.open };
+    const previousClose = tick.change !== undefined && tick.price - tick.change > 0
+      ? tick.price - tick.change
+      : getBasePrice(tick.price, tick.changeRate);
+    return previousClose === undefined
+      ? undefined
+      : { label: "전일 종가", price: previousClose };
+  }
+
+  #repairOverseasStockMetadata(
+    stocks: readonly PriceAlertStock[],
+  ): PriceAlertStock[] {
+    return stocks.map((stock) => {
+      if (stock.assetType !== "overseas" || !this.#stockMetadataSource) {
+        return stock;
+      }
+
+      try {
+        const metadata = this.#stockMetadataSource.resolveOverseas(stock.code);
+        if (stock.exchange === metadata.exchange) {
+          return stock;
+        }
+        this.#store.updateOverseasMetadata(stock.code, {
+          exchange: metadata.exchange,
+        });
+        console.log(
+          `미국 주가 알림 종목 정보를 갱신했습니다: ${stock.code} (${metadata.exchange})`,
+        );
+        return {
+          ...stock,
+          exchange: metadata.exchange,
+        };
+      } catch (error: unknown) {
+        if (!stock.exchange) {
+          console.error(
+            `미국 주가 알림 종목의 거래소를 확인하지 못해 구독에서 제외합니다: ${stock.code}`,
+            error,
+          );
+        }
+        return stock;
+      }
+    });
   }
 
   async #captureNxtClosesAfterMarket(

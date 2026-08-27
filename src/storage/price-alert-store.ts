@@ -150,6 +150,23 @@ export class PriceAlertStore {
       : undefined;
   }
 
+  updateOverseasMetadata(
+    code: string,
+    metadata: { exchange: OverseasExchange },
+  ): boolean {
+    const result = this.#database
+      .prepare(
+        `UPDATE price_alert_stocks
+         SET exchange = @exchange
+         WHERE code = @code AND asset_type = 'overseas'`,
+      )
+      .run({
+        code,
+        exchange: metadata.exchange,
+      });
+    return result.changes > 0;
+  }
+
   hasNotified(event: PriceAlertEvent): boolean {
     const row = this.#database
       .prepare(

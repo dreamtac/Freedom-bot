@@ -175,7 +175,7 @@ describe("PriceAlertMonitor", () => {
     }
   });
 
-  it("미국 종목이 시가 대비 임계값을 하락하면 디스코드 알림을 보낸다", async () => {
+  it("미국 종목이 전일 종가 대비 갭 하락하면 디스코드 알림을 보낸다", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-25T02:00:00.000Z"));
     const store = await createStore();
@@ -183,7 +183,7 @@ describe("PriceAlertMonitor", () => {
       code: "SOXL",
       name: "Direxion Daily Semiconductor Bull 3X Shares",
       assetType: "overseas",
-      exchange: "NAS",
+      exchange: "AMS",
     });
     const send = vi.fn(async () => undefined);
     const client = {
@@ -205,15 +205,16 @@ describe("PriceAlertMonitor", () => {
       expect(realtimeClient.subscriptions).toContainEqual({
         assetType: "overseas",
         symbol: "SOXL",
-        exchange: "NAS",
+        exchange: "AMS",
         session: "day",
       });
       await realtimeClient.onTick?.({
         assetType: "overseas",
         code: "SOXL",
-        market: "NAS",
-        open: 100,
+        market: "AMS",
+        open: 84,
         price: 85,
+        changeRate: -15,
       });
 
       expect(send).toHaveBeenCalledTimes(4);
@@ -223,6 +224,43 @@ describe("PriceAlertMonitor", () => {
         direction: "down",
         threshold: 10,
       })).toBe(true);
+    } finally {
+      monitor.stop();
+      store.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("기존 미국 알림의 누락된 거래소를 종목 마스터에서 복구한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-25T02:00:00.000Z"));
+    const store = await createStore();
+    store.add({ code: "SOXL", name: "SOXL", assetType: "overseas" });
+    const realtimeClient = new FakeRealtimePriceSource();
+    const monitor = new PriceAlertMonitor({
+      channelId: "channel-id",
+      client: {} as Client,
+      realtimeClient,
+      stockMetadataSource: {
+        resolveOverseas: () => ({
+          symbol: "SOXL",
+          name: "DIREXION SEMICONDUCTOR DAILY 3X",
+          exchange: "AMS",
+        }),
+      },
+      store,
+    });
+
+    try {
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get("SOXL")).toMatchObject({ exchange: "AMS" });
+      expect(realtimeClient.subscriptions).toContainEqual({
+        assetType: "overseas",
+        symbol: "SOXL",
+        exchange: "AMS",
+        session: "day",
+      });
     } finally {
       monitor.stop();
       store.close();
