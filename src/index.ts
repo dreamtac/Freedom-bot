@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { commandsByName } from "./commands/index.js";
 import { loadConfig } from "./config.js";
 import { NewsMonitor } from "./monitor/news-monitor.js";
+import { MarketCloseReportMonitor } from "./monitor/market-close-report-monitor.js";
 import { PriceAlertMonitor } from "./monitor/price-alert-monitor.js";
 import { StockMasterMonitor } from "./monitor/stock-master-monitor.js";
 import { KisClient } from "./sources/kis.js";
@@ -39,14 +40,24 @@ async function startBot(): Promise<void> {
     config.kis && config.notificationChannelId
       ? new KisRealtimeClient(config.kis)
       : undefined;
+  const kisClient = config.kis ? new KisClient(config.kis) : undefined;
   const priceAlertMonitor =
-    config.kis && realtimeClient && config.notificationChannelId
+    kisClient && realtimeClient && config.notificationChannelId
       ? new PriceAlertMonitor({
           channelId: config.notificationChannelId,
           client,
-          nxtClosePriceSource: new KisClient(config.kis),
+          nxtClosePriceSource: kisClient,
           realtimeClient,
           stockMetadataSource: stockStore,
+          store: priceAlertStore,
+        })
+      : undefined;
+  const marketCloseReportMonitor =
+    kisClient && config.notificationChannelId
+      ? new MarketCloseReportMonitor({
+          channelId: config.notificationChannelId,
+          client,
+          priceSource: kisClient,
           store: priceAlertStore,
         })
       : undefined;
@@ -83,6 +94,7 @@ async function startBot(): Promise<void> {
     } else if (!config.kis) {
       console.log("KIS API 키가 없어 실시간 주가 알림은 비활성화되었습니다.");
     }
+    marketCloseReportMonitor?.start();
     stockMasterMonitor.start();
   });
 
@@ -151,6 +163,7 @@ async function startBot(): Promise<void> {
     console.log(`${signal} 신호를 받아 봇을 종료합니다.`);
     newsMonitor?.stop();
     priceAlertMonitor?.stop();
+    marketCloseReportMonitor?.stop();
     stockMasterMonitor.stop();
     priceAlertStore.close();
     stockStore.close();

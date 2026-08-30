@@ -10,6 +10,7 @@ export const PRICE_ALERT_THRESHOLDS = [3, 5, 8, 10] as const;
 export const NIGHT_FUTURES_ALERT_THRESHOLDS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 
 export type PriceAlertDirection = "up" | "down";
+export type MarketCloseReportMarket = "domestic" | "overseas";
 
 export interface PriceAlertStock {
   code: string;
@@ -190,6 +191,33 @@ export class PriceAlertStore {
         )`,
       )
       .run({ ...event, notifiedAt: notifiedAt.getTime() });
+  }
+
+  hasSentMarketCloseReport(
+    market: MarketCloseReportMarket,
+    tradingDate: string,
+  ): boolean {
+    const row = this.#database
+      .prepare(
+        `SELECT 1 FROM market_close_reports
+         WHERE market = ? AND trading_date = ?`,
+      )
+      .get(market, tradingDate) as { 1: number } | undefined;
+    return row !== undefined;
+  }
+
+  markMarketCloseReportSent(
+    market: MarketCloseReportMarket,
+    tradingDate: string,
+    notifiedAt = new Date(),
+  ): void {
+    this.#database
+      .prepare(
+        `INSERT OR IGNORE INTO market_close_reports (
+          market, trading_date, notified_at
+        ) VALUES (?, ?, ?)`,
+      )
+      .run(market, tradingDate, notifiedAt.getTime());
   }
 
   getOpeningPrice(code: string, tradingDate: string): number | undefined {
@@ -385,6 +413,13 @@ export class PriceAlertStore {
         threshold REAL NOT NULL,
         notified_at INTEGER NOT NULL,
         PRIMARY KEY (trading_date, direction, threshold)
+      );
+
+      CREATE TABLE IF NOT EXISTS market_close_reports (
+        market TEXT NOT NULL CHECK(market IN ('domestic', 'overseas')),
+        trading_date TEXT NOT NULL,
+        notified_at INTEGER NOT NULL,
+        PRIMARY KEY (market, trading_date)
       );
     `);
 
