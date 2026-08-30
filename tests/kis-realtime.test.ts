@@ -293,7 +293,7 @@ describe("parseDomesticTradeMessage", () => {
 
   it("KIS 미국 주식 체결가 WebSocket 메시지를 읽는다", () => {
     const values = [
-      "AAPL", "2", "20260720", "20260720", "093001", "20260720", "223001",
+      "DNASAAPL", "AAPL", "2", "20260720", "20260720", "093001", "20260720", "223001",
       "180.00", "182.00", "179.50", "181.25", "2", "1.25", "0.69",
       "181.24", "181.26", "10", "12", "100", "1234567", "223456789",
       "534567", "700000", "130.00", "1",
@@ -352,7 +352,7 @@ describe("parseDomesticTradeMessage", () => {
 
 function createOverseasTradeMessage(symbol: string, price: number, open: number): string {
   const values = [
-    symbol, "2", "20260824", "20260824", "153000", "20260825", "043000",
+    `DAMS${symbol}`, symbol, "2", "20260824", "20260824", "153000", "20260825", "043000",
     String(open), String(open), String(price), String(price), "5", String(open - price),
     "-15.00", String(price - 0.01), String(price + 0.01), "10", "12", "100",
     "1234567", "223456789", "700000", "534567", "95.00", "1",

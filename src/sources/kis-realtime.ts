@@ -66,7 +66,7 @@ const DOMESTIC_TRADE_COLUMNS = [
 ] as const;
 
 const OVERSEAS_TRADE_COLUMNS = [
-  "symbol", "decimalPlaces", "tradingDate", "localDate", "localTime",
+  "realtimeSymbol", "symbol", "decimalPlaces", "tradingDate", "localDate", "localTime",
   "koreanDate", "koreanTime", "open", "high", "low", "price", "sign",
   "change", "changeRate", "bestBid", "bestAsk", "bidVolume", "askVolume",
   "tradeVolume", "accumulatedVolume", "accumulatedAmount", "sellVolume",
