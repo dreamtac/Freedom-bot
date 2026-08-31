@@ -13,10 +13,19 @@ export interface MarketCloseStockResult {
   changeRate: number;
 }
 
+export interface MarketCloseReferenceResult {
+  name: string;
+  price: number;
+  changeRate: number;
+  valuePrefix?: string;
+  valueSuffix?: string;
+}
+
 export interface MarketCloseReportNotification {
   market: MarketCloseReportMarket;
   tradingDate: string;
   indexes: readonly MarketCloseIndexResult[];
+  references?: readonly MarketCloseReferenceResult[];
   stocks: readonly MarketCloseStockResult[];
 }
 
@@ -53,6 +62,17 @@ export function buildMarketCloseReportEmbed(
     value,
     inline: false,
   }));
+  const referenceFields = report.references && report.references.length > 0
+    ? [{
+        name: "아침 시장 지표 · 오전 7시 기준",
+        value: report.references
+          .map((reference) =>
+            `**${reference.name}**  ${formatReferenceValue(reference)}  ${formatRate(reference.changeRate)}`
+          )
+          .join("\n"),
+        inline: false,
+      }]
+    : [];
 
   return new EmbedBuilder()
     .setColor(primaryRate > 0 ? 0xd92d20 : primaryRate < 0 ? 0x1570ef : 0x667085)
@@ -65,6 +85,7 @@ export function buildMarketCloseReportEmbed(
           .join("\n"),
         inline: false,
       },
+      ...referenceFields,
       ...stockFields,
       {
         name: "종목 요약",
@@ -73,9 +94,19 @@ export function buildMarketCloseReportEmbed(
       },
     )
     .setFooter({
-      text: `KIS Open API · ${formatTradingDate(report.tradingDate)} 정규장 마감 기준`,
+      text: report.market === "overseas" && referenceFields.length > 0
+        ? `KIS Open API · ${formatTradingDate(report.tradingDate)} 미국 정규장 마감 · 부가 지표 오전 7시 최신값`
+        : `KIS Open API · ${formatTradingDate(report.tradingDate)} 정규장 마감 기준`,
     })
     .setTimestamp();
+}
+
+function formatReferenceValue(reference: MarketCloseReferenceResult): string {
+  const value = new Intl.NumberFormat("ko-KR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(reference.price);
+  return `${reference.valuePrefix ?? ""}${value}${reference.valueSuffix ?? ""}`;
 }
 
 function formatRate(rate: number): string {

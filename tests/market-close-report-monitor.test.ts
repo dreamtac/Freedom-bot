@@ -13,7 +13,9 @@ import {
 } from "../src/monitor/market-close-report-monitor.js";
 import type {
   KisDailyPrice,
+  KisFuturesQuote,
   KisIndexQuote,
+  OverseasIndicatorMarketCode,
 } from "../src/sources/kis.js";
 import type { OverseasExchange } from "../src/sources/overseas-stocks.js";
 import { PriceAlertStore } from "../src/storage/price-alert-store.js";
@@ -46,6 +48,7 @@ describe("MarketCloseReportMonitor", () => {
       client,
       priceSource: source,
       requestGapMs: 0,
+      nightFuturesContractSource: async () => ({ code: "1A01609" }),
       store,
     });
 
@@ -86,6 +89,7 @@ describe("MarketCloseReportMonitor", () => {
       client: createClient(send),
       priceSource: source,
       requestGapMs: 0,
+      nightFuturesContractSource: async () => ({ code: "1A01609" }),
       store,
     });
 
@@ -98,8 +102,14 @@ describe("MarketCloseReportMonitor", () => {
       expect(embed.title).toBe("미국 시장 마감");
       expect(embed.fields?.[0]?.value).toContain("NASDAQ 종합");
       expect(embed.fields?.[0]?.value).toContain("S&P 500");
-      expect(embed.fields?.[1]?.value).toContain("엔비디아");
-      expect(embed.fields?.[1]?.value).not.toContain("삼성전자");
+      expect(embed.fields?.[1]?.name).toBe("아침 시장 지표 · 오전 7시 기준");
+      expect(embed.fields?.[1]?.value).toContain("KOSPI 야간선물");
+      expect(embed.fields?.[1]?.value).toContain("원/달러");
+      expect(embed.fields?.[1]?.value).toContain("WTI 근월물");
+      expect(embed.fields?.[2]?.value).toContain("엔비디아");
+      expect(embed.fields?.[2]?.value).not.toContain("삼성전자");
+      expect(source.nightFuturesCodes).toEqual(["1A01609"]);
+      expect(source.indicatorCodes).toEqual(["X:FX@KRW", "N:WTIF"]);
       expect(store.hasSentMarketCloseReport("overseas", "20260831")).toBe(true);
     } finally {
       monitor.stop();
@@ -163,11 +173,48 @@ describe("buildMarketCloseReportEmbed", () => {
     expect(stockFields.length).toBeGreaterThan(1);
     expect(stockFields.every((field) => field.value.length <= 1_024)).toBe(true);
   });
+
+  it("오전 7시 부가 지표의 가격과 등락률을 단위와 함께 표시한다", () => {
+    const embed = buildMarketCloseReportEmbed({
+      market: "overseas",
+      tradingDate: "20260831",
+      indexes: [{ name: "NASDAQ 종합", changeRate: -1.18 }],
+      references: [
+        {
+          name: "KOSPI 야간선물",
+          price: 392.45,
+          changeRate: 1.07,
+          valueSuffix: "pt",
+        },
+        {
+          name: "원/달러",
+          price: 1368,
+          changeRate: -0.83,
+          valueSuffix: "원/$",
+        },
+        {
+          name: "WTI 근월물",
+          price: 83.4,
+          changeRate: -1.25,
+          valuePrefix: "$",
+          valueSuffix: "/배럴",
+        },
+      ],
+      stocks: [{ code: "AAPL", name: "애플", changeRate: 0.43 }],
+    }).toJSON();
+
+    expect(embed.fields?.[1]?.value).toContain("392.45pt  +1.07%");
+    expect(embed.fields?.[1]?.value).toContain("1,368.00원/$  -0.83%");
+    expect(embed.fields?.[1]?.value).toContain("$83.40/배럴  -1.25%");
+    expect(embed.footer?.text).toContain("부가 지표 오전 7시 최신값");
+  });
 });
 
 class FakeMarketClosePriceSource {
   domesticStockCodes: string[] = [];
   overseasStockCodes: string[] = [];
+  indicatorCodes: string[] = [];
+  nightFuturesCodes: string[] = [];
 
   async fetchDomesticDailyPrices(code: string): Promise<KisDailyPrice[]> {
     this.domesticStockCodes.push(code);
@@ -194,6 +241,26 @@ class FakeMarketClosePriceSource {
 
   async fetchOverseasIndexQuote(code: string): Promise<KisIndexQuote> {
     return createIndexQuote(code, "overseas", code === "COMP" ? -1.18 : -0.72);
+  }
+
+  async fetchOverseasIndicatorQuote(
+    code: string,
+    marketCode: OverseasIndicatorMarketCode,
+  ): Promise<KisIndexQuote> {
+    this.indicatorCodes.push(`${marketCode}:${code}`);
+    return createIndexQuote(code, "overseas", code === "FX@KRW" ? -0.83 : 1.25);
+  }
+
+  async fetchKrxNightFuturesQuote(code: string): Promise<KisFuturesQuote> {
+    this.nightFuturesCodes.push(code);
+    return {
+      code,
+      price: 392.45,
+      change: 4.15,
+      changeRate: 1.07,
+      changeDirection: "up",
+      requestedAt: new Date(),
+    };
   }
 }
 

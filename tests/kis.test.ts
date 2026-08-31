@@ -5,6 +5,7 @@ import {
   normalizeDomesticIndexCode,
   normalizeDomesticStockCode,
   normalizeFuturesCode,
+  normalizeOverseasIndicatorCode,
   normalizeOverseasIndexCode,
 } from "../src/sources/kis.js";
 
@@ -33,6 +34,11 @@ describe("지수 코드 정규화", () => {
     expect(() => normalizeOverseasIndexCode("S&P500")).toThrow(
       "해외 지수 코드 형식이 올바르지 않습니다.",
     );
+  });
+
+  it("환율과 원자재 지표 코드를 정규화한다", () => {
+    expect(normalizeOverseasIndicatorCode("fx@krw")).toBe("FX@KRW");
+    expect(normalizeOverseasIndicatorCode("wtif")).toBe("WTIF");
   });
 });
 
@@ -499,6 +505,52 @@ describe("KisClient", () => {
     expect(requests[2]?.url).toContain("FID_COND_MRKT_DIV_CODE=N");
     expect(requests[2]?.url).toContain("FID_INPUT_ISCD=SPX");
     expect(requests[2]?.init?.headers).toMatchObject({ tr_id: "FHKST03030200" });
+  });
+
+  it("원달러와 WTI 같은 해외 시장 지표를 조회한다", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+      const url = input.toString();
+      requests.push({ url, init });
+      if (url.endsWith("/oauth2/tokenP")) {
+        return Response.json({ access_token: "indicator-token", expires_in: 3600 });
+      }
+      return Response.json({
+        rt_cd: "0",
+        output1: {
+          ovrs_nmix_prpr: "1368.00",
+          ovrs_nmix_prdy_vrss: "11.50",
+          prdy_vrss_sign: "5",
+          prdy_ctrt: "-0.83",
+          ovrs_nmix_prdy_clpr: "1379.50",
+        },
+      });
+    };
+    const client = new KisClient(
+      {
+        appKey: "indicator-app-key",
+        appSecret: "app-secret",
+        baseUrl: "https://openapi.example.com:9443",
+      },
+      fetchImpl,
+    );
+
+    await expect(client.fetchOverseasIndicatorQuote("fx@krw", "X"))
+      .resolves.toMatchObject({
+        code: "FX@KRW",
+        price: 1368,
+        change: -11.5,
+        changeRate: -0.83,
+        changeDirection: "down",
+      });
+
+    expect(requests[1]?.url).toContain(
+      "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice",
+    );
+    expect(requests[1]?.url).toContain("FID_COND_MRKT_DIV_CODE=X");
+    expect(requests[1]?.url).toContain("FID_INPUT_ISCD=FX%40KRW");
+    expect(requests[1]?.url).toContain("FID_PERIOD_DIV_CODE=D");
+    expect(requests[1]?.init?.headers).toMatchObject({ tr_id: "FHKST03030100" });
   });
 
   it("종목별 최근 뉴스 제목을 조회한다", async () => {

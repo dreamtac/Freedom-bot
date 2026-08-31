@@ -22,12 +22,15 @@ const OVERSEAS_DAILY_PRICE_PATH =
   "/uapi/overseas-price/v1/quotations/dailyprice";
 const OVERSEAS_INDEX_PRICE_PATH =
   "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice";
+const OVERSEAS_DAILY_CHART_PRICE_PATH =
+  "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice";
 const FUTURES_QUOTE_PATH =
   "/uapi/domestic-futureoption/v1/quotations/inquire-price";
 const TOKEN_PATH = "/oauth2/tokenP";
 const TOKEN_EXPIRY_SAFETY_MS = 60_000;
 
 export type DomesticMarketCode = "J" | "NX";
+export type OverseasIndicatorMarketCode = "N" | "X" | "I" | "S";
 
 export interface KisStockQuote {
   businessDate?: string;
@@ -351,6 +354,39 @@ export class KisClient {
     return parseOverseasIndexQuote(normalizedCode, asRecord(data.output1));
   }
 
+  async fetchOverseasIndicatorQuote(
+    code: string,
+    marketCode: OverseasIndicatorMarketCode,
+  ): Promise<KisIndexQuote> {
+    const normalizedCode = normalizeOverseasIndicatorCode(code);
+    const accessToken = await this.getAccessToken();
+    const url = new URL(OVERSEAS_DAILY_CHART_PRICE_PATH, this.config.baseUrl);
+    const requestedAt = new Date();
+    url.searchParams.set("FID_COND_MRKT_DIV_CODE", marketCode);
+    url.searchParams.set("FID_INPUT_ISCD", normalizedCode);
+    url.searchParams.set(
+      "FID_INPUT_DATE_1",
+      formatKisDate(new Date(requestedAt.getTime() - 14 * 24 * 60 * 60 * 1_000)),
+    );
+    url.searchParams.set("FID_INPUT_DATE_2", formatKisDate(requestedAt));
+    url.searchParams.set("FID_PERIOD_DIV_CODE", "D");
+
+    const response = await this.fetchWithTimeout(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        appkey: this.config.appKey,
+        appsecret: this.config.appSecret,
+        tr_id: "FHKST03030100",
+        custtype: "P",
+      },
+    });
+
+    const data = await readJsonResponse(response, "해외 시장 지표 조회");
+    assertKisSuccess(data, "해외 시장 지표 조회");
+    return parseOverseasIndexQuote(normalizedCode, asRecord(data.output1));
+  }
+
   async fetchOverseasQuote(
     symbol: string,
     exchange: OverseasExchange,
@@ -518,6 +554,14 @@ export function normalizeOverseasIndexCode(code: string): string {
   const normalizedCode = code.trim().toUpperCase();
   if (!/^[.A-Z][.A-Z0-9-]{0,9}$/.test(normalizedCode)) {
     throw new KisApiError("해외 지수 코드 형식이 올바르지 않습니다.");
+  }
+  return normalizedCode;
+}
+
+export function normalizeOverseasIndicatorCode(code: string): string {
+  const normalizedCode = code.trim().toUpperCase();
+  if (!/^[.@A-Z0-9-]{1,10}$/.test(normalizedCode)) {
+    throw new KisApiError("해외 시장 지표 코드 형식이 올바르지 않습니다.");
   }
   return normalizedCode;
 }
@@ -942,4 +986,16 @@ function asRecordArray(value: unknown): Record<string, unknown>[] {
   return value
     .map(asRecord)
     .filter((record) => Object.keys(record).length > 0);
+}
+
+function formatKisDate(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = (type: "year" | "month" | "day"): string =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}${value("month")}${value("day")}`;
 }

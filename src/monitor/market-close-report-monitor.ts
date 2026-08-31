@@ -3,9 +3,16 @@ import type { Client } from "discord.js";
 import {
   sendMarketCloseReport,
   type MarketCloseIndexResult,
+  type MarketCloseReferenceResult,
   type MarketCloseStockResult,
 } from "../notifications/discord-market-close-report.js";
-import type { KisDailyPrice, KisIndexQuote } from "../sources/kis.js";
+import type {
+  KisDailyPrice,
+  KisFuturesQuote,
+  KisIndexQuote,
+  OverseasIndicatorMarketCode,
+} from "../sources/kis.js";
+import { getCurrentKospi200NightFuturesContract } from "../sources/krx-night-futures.js";
 import { MARKET_INDEXES } from "../sources/market-indexes.js";
 import {
   getKoreanTradingDate,
@@ -32,6 +39,11 @@ interface MarketClosePriceSource {
     count?: number,
   ): Promise<KisDailyPrice[]>;
   fetchOverseasIndexQuote(code: string): Promise<KisIndexQuote>;
+  fetchOverseasIndicatorQuote(
+    code: string,
+    marketCode: OverseasIndicatorMarketCode,
+  ): Promise<KisIndexQuote>;
+  fetchKrxNightFuturesQuote(code: string): Promise<KisFuturesQuote>;
 }
 
 export interface MarketCloseReportMonitorOptions {
@@ -41,6 +53,7 @@ export interface MarketCloseReportMonitorOptions {
   store: PriceAlertStore;
   checkIntervalMs?: number;
   requestGapMs?: number;
+  nightFuturesContractSource?: () => Promise<{ code: string }>;
 }
 
 export class MarketCloseReportMonitor {
@@ -50,6 +63,7 @@ export class MarketCloseReportMonitor {
   readonly #store: PriceAlertStore;
   readonly #checkIntervalMs: number;
   readonly #requestGapMs: number;
+  readonly #nightFuturesContractSource: () => Promise<{ code: string }>;
   #timer: NodeJS.Timeout | undefined;
   #running = false;
   #stopped = true;
@@ -61,6 +75,7 @@ export class MarketCloseReportMonitor {
     store,
     checkIntervalMs = CHECK_INTERVAL_MS,
     requestGapMs = REQUEST_GAP_MS,
+    nightFuturesContractSource = getCurrentKospi200NightFuturesContract,
   }: MarketCloseReportMonitorOptions) {
     this.#channelId = channelId;
     this.#client = client;
@@ -68,6 +83,7 @@ export class MarketCloseReportMonitor {
     this.#store = store;
     this.#checkIntervalMs = checkIntervalMs;
     this.#requestGapMs = requestGapMs;
+    this.#nightFuturesContractSource = nightFuturesContractSource;
   }
 
   start(): void {
@@ -110,14 +126,18 @@ export class MarketCloseReportMonitor {
         return;
       }
 
-      const [indexes, stockResults] = await Promise.all([
+      const [indexes, stockResults, references] = await Promise.all([
         this.#fetchIndexes(dueReport.market),
         this.#fetchStocks(stocks, dueReport.tradingDate),
+        dueReport.market === "overseas"
+          ? this.#fetchMorningReferences()
+          : Promise.resolve([]),
       ]);
       await sendMarketCloseReport(this.#client, this.#channelId, {
         market: dueReport.market,
         tradingDate: dueReport.tradingDate,
         indexes,
+        ...(references.length > 0 ? { references } : {}),
         stocks: stockResults,
       });
       this.#store.markMarketCloseReportSent(
@@ -174,6 +194,57 @@ export class MarketCloseReportMonitor {
       stock.exchange,
       5,
     );
+  }
+
+  async #fetchMorningReferences(): Promise<MarketCloseReferenceResult[]> {
+    const references: MarketCloseReferenceResult[] = [];
+    try {
+      const contract = await this.#nightFuturesContractSource();
+      const quote = await this.#priceSource.fetchKrxNightFuturesQuote(contract.code);
+      references.push({
+        name: "KOSPI 야간선물",
+        price: quote.price,
+        changeRate: quote.changeRate,
+        valueSuffix: "pt",
+      });
+    } catch (error: unknown) {
+      console.error("마감 리포트용 KOSPI 야간선물을 조회하지 못했습니다.", error);
+    }
+
+    const indicators = [
+      {
+        name: "원/달러",
+        code: "FX@KRW",
+        marketCode: "X" as const,
+        valueSuffix: "원/$",
+      },
+      {
+        name: "WTI 근월물",
+        code: "WTIF",
+        marketCode: "N" as const,
+        valuePrefix: "$",
+        valueSuffix: "/배럴",
+      },
+    ];
+    for (const indicator of indicators) {
+      try {
+        await delay(this.#requestGapMs);
+        const quote = await this.#priceSource.fetchOverseasIndicatorQuote(
+          indicator.code,
+          indicator.marketCode,
+        );
+        references.push({
+          name: indicator.name,
+          price: quote.price,
+          changeRate: quote.changeRate,
+          ...(indicator.valuePrefix ? { valuePrefix: indicator.valuePrefix } : {}),
+          valueSuffix: indicator.valueSuffix,
+        });
+      } catch (error: unknown) {
+        console.error(`마감 리포트용 ${indicator.name} 지표를 조회하지 못했습니다.`, error);
+      }
+    }
+    return references;
   }
 }
 
