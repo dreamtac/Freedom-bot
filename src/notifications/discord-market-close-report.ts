@@ -4,12 +4,14 @@ import type { MarketCloseReportMarket } from "../storage/price-alert-store.js";
 
 export interface MarketCloseIndexResult {
   name: string;
+  price: number;
   changeRate: number;
 }
 
 export interface MarketCloseStockResult {
   code: string;
   name: string;
+  price: number;
   changeRate: number;
 }
 
@@ -53,7 +55,7 @@ export function buildMarketCloseReportEmbed(
   const stockFields = chunkLines(
     report.stocks.map(
       (stock, index) =>
-        `${index + 1}. **${stock.name}**  ${formatRate(stock.changeRate)}`,
+        `${index + 1}. **${stock.name}**  ${formatStockPrice(stock.price, report.market)}  ${formatRate(stock.changeRate)}`,
     ),
   ).map((value, index) => ({
     name: index === 0
@@ -81,7 +83,9 @@ export function buildMarketCloseReportEmbed(
       {
         name: "주요 지수",
         value: report.indexes
-          .map((index) => `**${index.name}**  ${formatRate(index.changeRate)}`)
+          .map((index) =>
+            `**${index.name}**  ${formatIndexPrice(index.price)}  ${formatRate(index.changeRate)}`
+          )
           .join("\n"),
         inline: false,
       },
@@ -107,6 +111,30 @@ function formatReferenceValue(reference: MarketCloseReferenceResult): string {
     maximumFractionDigits: 2,
   }).format(reference.price);
   return `${reference.valuePrefix ?? ""}${value}${reference.valueSuffix ?? ""}`;
+}
+
+function formatIndexPrice(price: number): string {
+  return `${formatNumber(price, 2, 2)}pt`;
+}
+
+function formatStockPrice(
+  price: number,
+  market: MarketCloseReportMarket,
+): string {
+  return market === "domestic"
+    ? `${formatNumber(price, 0, 0)}원`
+    : `$${formatNumber(price, 2, 4)}`;
+}
+
+function formatNumber(
+  value: number,
+  minimumFractionDigits: number,
+  maximumFractionDigits: number,
+): string {
+  return new Intl.NumberFormat("ko-KR", {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  }).format(value);
 }
 
 function formatRate(rate: number): string {

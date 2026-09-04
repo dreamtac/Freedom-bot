@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildMarketCloseReportEmbed } from "../src/notifications/discord-market-close-report.js";
 import {
+  calculateDailyClose,
   calculateDailyChangeRate,
   getDueMarketCloseReport,
   MarketCloseReportMonitor,
@@ -64,7 +65,9 @@ describe("MarketCloseReportMonitor", () => {
       expect(embed.title).toBe("한국 시장 마감");
       expect(embed.fields?.[0]?.value).toContain("KOSPI");
       expect(embed.fields?.[0]?.value).toContain("KOSDAQ");
+      expect(embed.fields?.[0]?.value).toContain("100.00pt");
       expect(embed.fields?.[1]?.value).toContain("삼성전자");
+      expect(embed.fields?.[1]?.value).toContain("102원");
       expect(embed.fields?.[1]?.value).not.toContain("엔비디아");
       expect(store.hasSentMarketCloseReport("domestic", "20260831")).toBe(true);
     } finally {
@@ -102,11 +105,13 @@ describe("MarketCloseReportMonitor", () => {
       expect(embed.title).toBe("미국 시장 마감");
       expect(embed.fields?.[0]?.value).toContain("NASDAQ 종합");
       expect(embed.fields?.[0]?.value).toContain("S&P 500");
+      expect(embed.fields?.[0]?.value).toContain("100.00pt");
       expect(embed.fields?.[1]?.name).toBe("아침 시장 지표 · 오전 7시 기준");
       expect(embed.fields?.[1]?.value).toContain("KOSPI 야간선물");
       expect(embed.fields?.[1]?.value).toContain("원/달러");
       expect(embed.fields?.[1]?.value).toContain("WTI 근월물");
       expect(embed.fields?.[2]?.value).toContain("엔비디아");
+      expect(embed.fields?.[2]?.value).toContain("$98.00");
       expect(embed.fields?.[2]?.value).not.toContain("삼성전자");
       expect(source.nightFuturesCodes).toEqual(["1A01609"]);
       expect(source.indicatorCodes).toEqual(["X:FX@KRW", "N:WTIF"]);
@@ -133,6 +138,15 @@ describe("MarketCloseReportMonitor", () => {
         "20260831",
       ),
     ).toBeCloseTo(5);
+    expect(
+      calculateDailyClose(
+        [
+          { date: "20260831", close: 105, volume: 10 },
+          { date: "20260828", close: 100, volume: 20 },
+        ],
+        "20260831",
+      ),
+    ).toEqual({ price: 105, changeRate: 5 });
   });
 });
 
@@ -142,12 +156,12 @@ describe("buildMarketCloseReportEmbed", () => {
       market: "overseas",
       tradingDate: "20260831",
       indexes: [
-        { name: "NASDAQ 종합", changeRate: -1.18 },
-        { name: "S&P 500", changeRate: -0.72 },
+        { name: "NASDAQ 종합", price: 21_455.55, changeRate: -1.18 },
+        { name: "S&P 500", price: 6_345.67, changeRate: -0.72 },
       ],
       stocks: [
-        { code: "NVDA", name: "엔비디아", changeRate: -3.84 },
-        { code: "AAPL", name: "애플", changeRate: 0.43 },
+        { code: "NVDA", name: "엔비디아", price: 205.74, changeRate: -3.84 },
+        { code: "AAPL", name: "애플", price: 241.18, changeRate: 0.43 },
       ],
     }).toJSON();
 
@@ -159,10 +173,11 @@ describe("buildMarketCloseReportEmbed", () => {
     const embed = buildMarketCloseReportEmbed({
       market: "overseas",
       tradingDate: "20260831",
-      indexes: [{ name: "NASDAQ 종합", changeRate: 1 }],
+      indexes: [{ name: "NASDAQ 종합", price: 21_455.55, changeRate: 1 }],
       stocks: Array.from({ length: 40 }, (_, index) => ({
         code: `TEST${index}`,
         name: `아주 긴 관심 종목 이름 ${index + 1} `.repeat(3),
+        price: 100 + index,
         changeRate: index / 10,
       })),
     }).toJSON();
@@ -178,7 +193,7 @@ describe("buildMarketCloseReportEmbed", () => {
     const embed = buildMarketCloseReportEmbed({
       market: "overseas",
       tradingDate: "20260831",
-      indexes: [{ name: "NASDAQ 종합", changeRate: -1.18 }],
+      indexes: [{ name: "NASDAQ 종합", price: 21_455.55, changeRate: -1.18 }],
       references: [
         {
           name: "KOSPI 야간선물",
@@ -200,7 +215,7 @@ describe("buildMarketCloseReportEmbed", () => {
           valueSuffix: "/배럴",
         },
       ],
-      stocks: [{ code: "AAPL", name: "애플", changeRate: 0.43 }],
+      stocks: [{ code: "AAPL", name: "애플", price: 241.18, changeRate: 0.43 }],
     }).toJSON();
 
     expect(embed.fields?.[1]?.value).toContain("392.45pt  +1.07%");

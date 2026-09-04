@@ -160,7 +160,11 @@ export class MarketCloseReportMonitor {
       const quote = market === "domestic"
         ? await this.#priceSource.fetchDomesticIndexQuote(definition.code)
         : await this.#priceSource.fetchOverseasIndexQuote(definition.code);
-      results.push({ name: definition.name, changeRate: quote.changeRate });
+      results.push({
+        name: definition.name,
+        price: quote.price,
+        changeRate: quote.changeRate,
+      });
       await delay(this.#requestGapMs);
     }
     return results;
@@ -175,10 +179,12 @@ export class MarketCloseReportMonitor {
       const prices = stock.assetType === "domestic"
         ? await this.#priceSource.fetchDomesticDailyPrices(stock.code, 5)
         : await this.#fetchOverseasPrices(stock);
+      const close = calculateDailyClose(prices, tradingDate);
       results.push({
         code: stock.code,
         name: stock.name,
-        changeRate: calculateDailyChangeRate(prices, tradingDate),
+        price: close.price,
+        changeRate: close.changeRate,
       });
       await delay(this.#requestGapMs);
     }
@@ -273,6 +279,13 @@ export function calculateDailyChangeRate(
   prices: readonly KisDailyPrice[],
   tradingDate: string,
 ): number {
+  return calculateDailyClose(prices, tradingDate).changeRate;
+}
+
+export function calculateDailyClose(
+  prices: readonly KisDailyPrice[],
+  tradingDate: string,
+): { price: number; changeRate: number } {
   const current = prices.find(
     (price) => price.date === tradingDate && price.close !== undefined,
   );
@@ -287,7 +300,10 @@ export function calculateDailyChangeRate(
   if (!current?.close || !previous?.close) {
     throw new Error(`${tradingDate} 정규장 종가가 아직 확정되지 않았습니다.`);
   }
-  return ((current.close - previous.close) / previous.close) * 100;
+  return {
+    price: current.close,
+    changeRate: ((current.close - previous.close) / previous.close) * 100,
+  };
 }
 
 function getKoreanClock(now: Date): { minutes: number } {
