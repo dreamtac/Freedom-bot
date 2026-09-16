@@ -1,3 +1,19 @@
+# Freedom-bot TODO
+
+## 이터널 리턴 전적 기능
+
+- 최종 범위: [전적 수집·DB 설계 보고서](reports/eternal-return-data-collection-report.md)
+- 단계별 작업과 완료 기준: [이터널 리턴 구현 TODO](reports/eternal-return-implementation-todo.md)
+- [x] 0단계: 개발·운영 기능 분리 코드·로컬 검증 완료(2026-09-16). 미니PC 적용은 별도.
+- [x] 1단계: 공통 API 요청 제어 완료(2026-09-16).
+- [x] 2단계: SQLite DB와 데이터 모델 완료(2026-09-16).
+- [x] 3단계: 최신·과거 전적 수집 서비스 완료(2026-09-16).
+- 다음 착수: 지정 유저 5분 자동 갱신.
+- 이후: 시즌 프로필·분석 계산 → 디스코드 화면 → 통합 검증.
+- 전체 유저·친구 평균 비교와 루트 제목·구성 상세는 구현 범위에서 제외.
+
+---
+
 # Market Data Roadmap
 
 ## Current Baseline

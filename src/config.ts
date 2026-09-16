@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readEternalReturnConfig } from "./features/eternal-return-policy.js";
 
 const snowflakeSchema = z
   .string()
@@ -62,6 +63,8 @@ export interface AppConfig {
   newsPollIntervalMs: number;
   stockMasterRefreshIntervalMs: number;
   kis?: KisConfig;
+  erEnabled: boolean;
+  erApiKey?: string;
 }
 
 export function loadConfig(
@@ -85,6 +88,7 @@ export function loadConfig(
 
   return {
     botToken: result.data.DISCORD_BOT_TOKEN,
+    ...readEternalReturnConfig(environment),
     clientId: result.data.DISCORD_CLIENT_ID,
     ...(result.data.DISCORD_GUILD_ID
       ? { guildId: result.data.DISCORD_GUILD_ID }

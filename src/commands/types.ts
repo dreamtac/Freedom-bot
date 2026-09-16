@@ -9,6 +9,8 @@ import type { KisConfig } from "../config.js";
 import type { KisRealtimeStatus } from "../sources/kis-realtime.js";
 import type { PriceAlertStore } from "../storage/price-alert-store.js";
 import type { StockStore } from "../storage/stock-store.js";
+import type { EternalReturnStore } from "../storage/eternal-return-store.js";
+import type { EternalReturnCollector } from "../services/eternal-return-collector.js";
 
 export interface PriceAlertRefresher {
   refresh(): void;
@@ -35,6 +37,10 @@ export interface BotCommand {
 
 export interface BotCommandContext {
   kis?: KisConfig;
+  erEnabled?: boolean;
+  erApiKey?: string;
+  eternalReturnStore?: EternalReturnStore;
+  eternalReturnCollector?: EternalReturnCollector;
   notificationChannelId?: string;
   priceAlertMonitor?: PriceAlertRefresher;
   priceAlertStore?: PriceAlertStore;

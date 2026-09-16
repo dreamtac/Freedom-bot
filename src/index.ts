@@ -4,12 +4,13 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  MessageFlags,
 } from "discord.js";
 import { resolve } from "node:path";
 
-import { commandsByName } from "./commands/index.js";
+import { loadCommands } from "./commands/index.js";
 import { loadConfig } from "./config.js";
+import { registerDiscordDiagnostics } from "./discord-diagnostics.js";
+import { handleInteraction } from "./interaction-handler.js";
 import { NewsMonitor } from "./monitor/news-monitor.js";
 import { MarketCloseReportMonitor } from "./monitor/market-close-report-monitor.js";
 import { PriceAlertMonitor } from "./monitor/price-alert-monitor.js";
@@ -21,12 +22,27 @@ import { StockStore } from "./storage/stock-store.js";
 
 async function startBot(): Promise<void> {
   const config = loadConfig();
+  const commands = await loadCommands(config);
+  const commandsByName = new Map(commands.map(command => [command.data.name, command]));
+  const shutdownEternalReturn = config.erEnabled
+    ? (await import("./sources/eternal-return-request-queue.js")).shutdownEternalReturnRequests
+    : undefined;
   const databasePath = resolve(".data", "freedom-bot.sqlite");
+  const eternalReturnStore = config.erEnabled
+    ? await (await import("./storage/eternal-return-store.js")).EternalReturnStore.open(databasePath)
+    : undefined;
+  const eternalReturnCollector = eternalReturnStore && config.erApiKey
+    ? new (await import("./services/eternal-return-collector.js")).EternalReturnCollector({
+        apiKey: config.erApiKey,
+        store: eternalReturnStore,
+      })
+    : undefined;
   const priceAlertStore = await PriceAlertStore.open(databasePath);
   const stockStore = await StockStore.open(databasePath);
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
+  registerDiscordDiagnostics(client);
   const newsMonitor = config.notificationChannelId
     ? new NewsMonitor({
         client,
@@ -71,7 +87,10 @@ async function startBot(): Promise<void> {
   });
 
   client.once(Events.ClientReady, (readyClient) => {
-    console.log(`${readyClient.user.tag}로 로그인했습니다.`);
+    console.log(`${readyClient.user.tag}로 로그인했습니다. (ID: ${readyClient.user.id}, 명령어 ${commandsByName.size}개)`);
+    if (readyClient.user.id !== config.clientId) {
+      console.error("DISCORD_CLIENT_ID와 로그인한 봇 ID가 다릅니다. 명령어가 다른 애플리케이션에 등록될 수 있습니다.");
+    }
     if (newsMonitor) {
       if (!readyClient.channels.cache.has(config.notificationChannelId!)) {
         console.error(
@@ -99,63 +118,24 @@ async function startBot(): Promise<void> {
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand() && !interaction.isAutocomplete()) {
-      return;
-    }
-
-    const command = commandsByName.get(interaction.commandName);
-    if (!command) {
-      console.warn(`등록되지 않은 명령어 요청: ${interaction.commandName}`);
-      return;
-    }
-
-    try {
-      const context = {
-        ...(config.kis ? { kis: config.kis } : {}),
-        ...(config.notificationChannelId
-          ? { notificationChannelId: config.notificationChannelId }
-          : {}),
-        ...(priceAlertMonitor ? { priceAlertMonitor } : {}),
-        ...(realtimeClient ? { realtimeStatusProvider: realtimeClient } : {}),
-        priceAlertStore,
-        stockStore,
-      };
-
-      if (interaction.isAutocomplete()) {
-        if (command.autocomplete) {
-          await command.autocomplete(interaction, context);
-        } else {
-          await interaction.respond([]);
-        }
-        return;
-      }
-
-      await command.execute(interaction, context);
-    } catch (error: unknown) {
-      console.error(`/${interaction.commandName} 실행에 실패했습니다.`, error);
-
-      if (interaction.isAutocomplete()) {
-        if (!interaction.responded) {
-          await interaction.respond([]);
-        }
-        return;
-      }
-
-      const response = {
-        content: "명령어를 처리하는 중 문제가 발생했습니다.",
-        flags: MessageFlags.Ephemeral,
-      } as const;
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp(response);
-      } else {
-        await interaction.reply(response);
-      }
-    }
+    await handleInteraction(interaction, commandsByName, {
+      erEnabled: config.erEnabled,
+      ...(config.erApiKey ? { erApiKey: config.erApiKey } : {}),
+      ...(eternalReturnStore ? { eternalReturnStore } : {}),
+      ...(eternalReturnCollector ? { eternalReturnCollector } : {}),
+      ...(config.kis ? { kis: config.kis } : {}),
+      ...(config.notificationChannelId
+        ? { notificationChannelId: config.notificationChannelId }
+        : {}),
+      ...(priceAlertMonitor ? { priceAlertMonitor } : {}),
+      ...(realtimeClient ? { realtimeStatusProvider: realtimeClient } : {}),
+      priceAlertStore,
+      stockStore,
+    });
   });
 
   let shuttingDown = false;
-  const shutdown = (signal: string, exitCode = 0): void => {
+  const shutdown = async (signal: string, exitCode = 0): Promise<void> => {
     if (shuttingDown) {
       return;
     }
@@ -165,21 +145,24 @@ async function startBot(): Promise<void> {
     priceAlertMonitor?.stop();
     marketCloseReportMonitor?.stop();
     stockMasterMonitor.stop();
+    client.destroy();
+    shutdownEternalReturn?.();
+    await eternalReturnCollector?.shutdown();
+    eternalReturnStore?.close();
     priceAlertStore.close();
     stockStore.close();
-    client.destroy();
     process.exit(exitCode);
   };
 
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
   process.once("uncaughtException", (error) => {
     console.error("처리하지 못한 예외로 봇을 종료합니다.", error);
-    shutdown("uncaughtException", 1);
+    void shutdown("uncaughtException", 1);
   });
   process.once("unhandledRejection", (reason) => {
     console.error("처리하지 못한 Promise 오류로 봇을 종료합니다.", reason);
-    shutdown("unhandledRejection", 1);
+    void shutdown("unhandledRejection", 1);
   });
 
   await client.login(config.botToken);

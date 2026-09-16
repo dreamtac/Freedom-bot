@@ -11,7 +11,7 @@ import { statusCommand } from "./status.js";
 import { testNotificationCommand } from "./test-notification.js";
 import { volumeCommand } from "./volume.js";
 
-export const commands: readonly BotCommand[] = [
+const coreCommands: readonly BotCommand[] = [
   endfieldCommand,
   nightFuturesCommand,
   nightFuturesAlertCommand,
@@ -25,6 +25,10 @@ export const commands: readonly BotCommand[] = [
   volumeCommand,
 ];
 
-export const commandsByName = new Map(
-  commands.map((command) => [command.data.name, command]),
-);
+// Registration and runtime must use the same feature selection. Future ER
+// services/stores belong behind this gate, not at a shared module's top level.
+export async function loadCommands(config: { erEnabled: boolean }): Promise<readonly BotCommand[]> {
+  if (!config.erEnabled) return [...coreCommands];
+  const { eternalReturnCommand, eternalReturnRecordCommand } = await import("./eternal-return.js");
+  return [coreCommands[0]!, eternalReturnCommand, eternalReturnRecordCommand, ...coreCommands.slice(1)];
+}
