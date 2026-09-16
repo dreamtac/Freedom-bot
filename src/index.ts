@@ -37,6 +37,19 @@ async function startBot(): Promise<void> {
         store: eternalReturnStore,
       })
     : undefined;
+  const eternalReturnMonitor = eternalReturnStore && eternalReturnCollector
+    ? new (await import("./monitor/eternal-return-monitor.js")).EternalReturnMonitor({
+        store: eternalReturnStore,
+        collector: eternalReturnCollector,
+        intervalMs: config.erRefreshIntervalMs,
+      })
+    : undefined;
+  const eternalReturnProfileService = eternalReturnStore && config.erApiKey
+    ? new (await import("./services/eternal-return-profile.js")).EternalReturnProfileService({
+        apiKey: config.erApiKey,
+        store: eternalReturnStore,
+      })
+    : undefined;
   const priceAlertStore = await PriceAlertStore.open(databasePath);
   const stockStore = await StockStore.open(databasePath);
   const client = new Client({
@@ -115,6 +128,11 @@ async function startBot(): Promise<void> {
     }
     marketCloseReportMonitor?.start();
     stockMasterMonitor.start();
+    if (eternalReturnMonitor) {
+      void eternalReturnMonitor.start().catch((error: unknown) => {
+        console.error("이터널 리턴 자동 갱신 모니터를 시작하지 못했습니다.", error);
+      });
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -123,6 +141,7 @@ async function startBot(): Promise<void> {
       ...(config.erApiKey ? { erApiKey: config.erApiKey } : {}),
       ...(eternalReturnStore ? { eternalReturnStore } : {}),
       ...(eternalReturnCollector ? { eternalReturnCollector } : {}),
+      ...(eternalReturnProfileService ? { eternalReturnProfileService } : {}),
       ...(config.kis ? { kis: config.kis } : {}),
       ...(config.notificationChannelId
         ? { notificationChannelId: config.notificationChannelId }
@@ -146,7 +165,9 @@ async function startBot(): Promise<void> {
     marketCloseReportMonitor?.stop();
     stockMasterMonitor.stop();
     client.destroy();
+    const eternalReturnMonitorStop = eternalReturnMonitor?.stop();
     shutdownEternalReturn?.();
+    await eternalReturnMonitorStop;
     await eternalReturnCollector?.shutdown();
     eternalReturnStore?.close();
     priceAlertStore.close();

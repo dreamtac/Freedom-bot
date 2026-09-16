@@ -24,6 +24,10 @@ const configSchema = z.object({
     (value) => (value === "" || value === undefined ? 86_400_000 : value),
     z.coerce.number().int().min(60_000).max(604_800_000),
   ),
+  ER_REFRESH_INTERVAL_MS: z.preprocess(
+    (value) => (value === "" || value === undefined ? 300_000 : value),
+    z.coerce.number().int().min(60_000).max(86_400_000),
+  ),
   KIS_APP_KEY: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional(),
@@ -62,6 +66,7 @@ export interface AppConfig {
   notificationChannelId?: string;
   newsPollIntervalMs: number;
   stockMasterRefreshIntervalMs: number;
+  erRefreshIntervalMs: number;
   kis?: KisConfig;
   erEnabled: boolean;
   erApiKey?: string;
@@ -98,6 +103,7 @@ export function loadConfig(
       : {}),
     newsPollIntervalMs: result.data.NEWS_POLL_INTERVAL_MS,
     stockMasterRefreshIntervalMs: result.data.STOCK_MASTER_REFRESH_INTERVAL_MS,
+    erRefreshIntervalMs: result.data.ER_REFRESH_INTERVAL_MS,
     ...(result.data.KIS_APP_KEY && result.data.KIS_APP_SECRET
       ? {
           kis: {

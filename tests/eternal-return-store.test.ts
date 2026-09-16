@@ -136,9 +136,11 @@ describe("EternalReturnStore", () => {
     })).toThrow();
     expect(store.countGames("uid")).toBe(0);
 
-    store.saveGamePage("uid", [game()], {
+    expect(store.saveGamePage("uid", [game()], {
       kind: "latest", status: "succeeded", boundaryGameId: 123, succeededAt: new Date(5_000),
-    });
+    })).toBe(1);
+    expect(store.saveGamePage("uid", [game()])).toBe(1);
+    expect(store.countExistingGameIds("uid", [123, 999])).toBe(1);
     expect(store.countGames("uid")).toBe(1);
     expect(store.getCollectionState("uid", "latest")?.boundaryGameId).toBe(123);
     store.close();

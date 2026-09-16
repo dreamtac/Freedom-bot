@@ -35,6 +35,13 @@ export interface EternalReturnGameQuery {
   limit?: number;
 }
 
+export interface EternalReturnCharacterSummary {
+  characterNum: number;
+  games: number;
+  averageDamage?: number;
+  damageSamples: number;
+}
+
 export interface EternalReturnCollectionState {
   userId: string;
   kind: EternalReturnCollectionKind;
@@ -266,6 +273,16 @@ export class EternalReturnStore {
     return changed;
   }
 
+  countExistingGameIds(userId: string, gameIds: readonly number[]): number {
+    const uniqueIds = [...new Set(gameIds.filter(Number.isSafeInteger))];
+    if (uniqueIds.length === 0) return 0;
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const row = this.#database.prepare(
+      `SELECT COUNT(*) count FROM er_games WHERE user_id = ? AND game_id IN (${placeholders})`,
+    ).get(userId, ...uniqueIds) as { count: number };
+    return row.count;
+  }
+
   countGames(userId: string, query: Omit<EternalReturnGameQuery, "beforeStartedAt" | "limit"> = {}): number {
     const conditions = ["user_id = @userId"];
     const parameters: Record<string, unknown> = { userId };
@@ -294,6 +311,30 @@ export class EternalReturnStore {
       ORDER BY started_at DESC, game_id DESC LIMIT @limit
     `).all(parameters) as GameRow[];
     return rows.map(toGame);
+  }
+
+  getCharacterSummaries(
+    userId: string,
+    query: Pick<EternalReturnGameQuery, "matchingMode" | "seasonId"> = {},
+  ): EternalReturnCharacterSummary[] {
+    const conditions = ["user_id = @userId", "character_num IS NOT NULL"];
+    const parameters: Record<string, unknown> = { userId };
+    addGameFilters(conditions, parameters, query);
+    const rows = this.#database.prepare(`
+      SELECT character_num, COUNT(*) games, AVG(damage_to_player) average_damage,
+        COUNT(damage_to_player) damage_samples
+      FROM er_games WHERE ${conditions.join(" AND ")}
+      GROUP BY character_num
+      ORDER BY games DESC, character_num ASC
+    `).all(parameters) as Array<{
+      character_num: number; games: number; average_damage: number | null; damage_samples: number;
+    }>;
+    return rows.map(row => ({
+      characterNum: row.character_num,
+      games: row.games,
+      ...(row.average_damage !== null ? { averageDamage: row.average_damage } : {}),
+      damageSamples: row.damage_samples,
+    }));
   }
 
   updateCollectionState(userId: string, update: EternalReturnCollectionUpdate, now = new Date()): void {

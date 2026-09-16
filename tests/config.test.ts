@@ -17,6 +17,7 @@ describe("loadConfig", () => {
       guildId: "23456789012345678",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
+      erRefreshIntervalMs: 300_000,
     });
   });
 
@@ -33,6 +34,7 @@ describe("loadConfig", () => {
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
+      erRefreshIntervalMs: 300_000,
     });
   });
 
@@ -50,6 +52,7 @@ describe("loadConfig", () => {
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
+      erRefreshIntervalMs: 300_000,
       kis: {
         appKey: "app-key",
         appSecret: "app-secret",
@@ -85,6 +88,11 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...required, ER_ENABLED: "true", ER_API_KEY: " key " }))
       .toMatchObject({ erEnabled: true, erApiKey: "key" });
     expect(loadConfig({ ...required, ER_ENABLED: "true" })).toMatchObject({ erEnabled: true });
+  });
+
+  it("이터널 리턴 자동 갱신 주기를 별도로 설정한다", () => {
+    expect(loadConfig({ ...required, ER_REFRESH_INTERVAL_MS: "600000" }).erRefreshIntervalMs).toBe(600_000);
+    expect(() => loadConfig({ ...required, ER_REFRESH_INTERVAL_MS: "1000" })).toThrow("환경변수 설정");
   });
 
   it.each(["0", "1", "yes", "FALSE", "typo"])("잘못된 기능 설정 %s를 거부한다", flag => {

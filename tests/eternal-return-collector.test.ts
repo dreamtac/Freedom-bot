@@ -55,6 +55,18 @@ describe("EternalReturnCollector latest refresh", () => {
     store.close();
   });
 
+  it("이미 저장된 경기만 다시 확인하면 새 경기 수는 0이다", async () => {
+    const { store } = await createStore();
+    seedBoundary(store, 100);
+    const collector = new EternalReturnCollector({
+      apiKey: "key", store, loadPage: vi.fn().mockResolvedValue(response([100])),
+    });
+    const result = await collector.refreshUser("uid");
+    expect(result.storedGames).toBe(0);
+    expect(store.getCollectionState("uid", "latest")?.lastSuccessAt).toBeInstanceOf(Date);
+    store.close();
+  });
+
   it("같은 닉네임의 동시 직접 검색은 UID와 페이지 요청을 공유한다", async () => {
     const { store } = await createStore();
     const resolveUserId = vi.fn(async () => {
@@ -69,6 +81,24 @@ describe("EternalReturnCollector latest refresh", () => {
     ]);
     expect(first).toBe(second);
     expect(resolveUserId).toHaveBeenCalledTimes(1);
+    expect(loadPage).toHaveBeenCalledTimes(1);
+    store.close();
+  });
+
+  it("수동 검색과 자동 갱신이 같은 UID이면 페이지 요청을 공유한다", async () => {
+    const { store } = await createStore();
+    store.upsertUser("uid", "홉빵맨");
+    let finish!: (value: EternalReturnResponse) => void;
+    const loadPage = vi.fn(() => new Promise<EternalReturnResponse>(resolve => { finish = resolve; }));
+    const collector = new EternalReturnCollector({
+      apiKey: "key", store, resolveUserId: vi.fn().mockResolvedValue("uid"), loadPage,
+    });
+
+    const manual = collector.refreshNickname("홉빵맨");
+    await Promise.resolve();
+    const automatic = collector.refreshUser("uid", "refresh");
+    finish(response([10]));
+    await Promise.all([manual, automatic]);
     expect(loadPage).toHaveBeenCalledTimes(1);
     store.close();
   });

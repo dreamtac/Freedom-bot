@@ -123,7 +123,7 @@ export class EternalReturnCollector {
     if (!nickname) throw new Error("이터널 리턴 닉네임이 필요합니다.");
     const userId = await this.#resolveUserId(nickname, this.#apiKey, { priority });
     this.#store.upsertUser(userId, nickname, this.#now());
-    return this.#refreshUser(userId, nickname, priority);
+    return this.refreshUser(userId, priority);
   }
 
   async #refreshUser(
@@ -171,7 +171,8 @@ export class EternalReturnCollector {
         if (games.length > 0) pageSignatures.add(signature);
         reachedBoundary = boundary !== undefined && games.some(game => game.gameId === boundary);
         exhausted = games.length === 0 || next === undefined;
-        storedGames += this.#store.saveGamePage(userId, games, {
+        storedGames += countNewGames(this.#store, userId, games);
+        this.#store.saveGamePage(userId, games, {
           kind: "latest", status: "running", cursor: next ?? null,
         }, this.#now());
 
@@ -245,7 +246,8 @@ export class EternalReturnCollector {
         const next = normalizeCursor(response.next);
         if (next === cursor) throw new Error(`반복된 경기 페이지 커서입니다: ${next}`);
         exhausted = games.length === 0 || next === undefined;
-        storedGames += this.#store.saveGamePage(userId, games, {
+        storedGames += countNewGames(this.#store, userId, games);
+        this.#store.saveGamePage(userId, games, {
           kind: "backfill", status: "running", cursor: exhausted ? null : (next ?? null),
         }, this.#now());
         cursor = exhausted ? undefined : next;
@@ -289,6 +291,15 @@ function validGames(games: readonly EternalReturnGame[]): Array<EternalReturnGam
     if (Number.isSafeInteger(gameId)) valid.push({ ...game, gameId });
   }
   return valid;
+}
+
+function countNewGames(
+  store: EternalReturnStore,
+  userId: string,
+  games: readonly (EternalReturnGame & { gameId: number })[],
+): number {
+  const ids = [...new Set(games.map(game => game.gameId))];
+  return ids.length - store.countExistingGameIds(userId, ids);
 }
 
 function normalizeCursor(value: number | string | undefined): string | undefined {

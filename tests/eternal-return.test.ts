@@ -2,7 +2,8 @@ import { it as test, afterEach, beforeEach } from "vitest";
 import assert from "node:assert/strict";
 import {
   erGet, getRecentGamesByNickname, getRankByNickname, getGamesByUserId,
-  getUserIdByNickname, getGameResults, getFreeCharacters,
+  getUserIdByNickname, getGameResults, getFreeCharacters, getRankByUserId,
+  getUserStatsByUserId,
 } from "../src/sources/eternal-return.js";
 import { getReferenceData as loadReferenceData, createEmptyReferenceData } from "../src/sources/eternal-return-reference.js";
 import { buildRecentGamesEmbed, buildRankEmbed, buildFreeCharactersEmbed } from "../src/commands/eternal-return-formatters.js";
@@ -90,6 +91,22 @@ test("documented uid response supports nickname → season rank", async () => {
   const data = await getRankByNickname(nickname, 33, key);
   assert.equal(data.userRank.mmr, 3933);
   assert.equal(calls[1], "https://open-api.bser.io/v1/rank/uid/sample-uid/33/3");
+});
+
+test("UID season stats and rank use their documented endpoints", async () => {
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(url);
+    return url.includes("/stats/")
+      ? json({ code: 200, userStats: [{ mmr: 4648, characterStats: [] }] })
+      : json({ code: 200, userRank: { mmr: 4648 } });
+  };
+  await getUserStatsByUserId("uid/a", 41, 3, key);
+  await getRankByUserId("uid/a", 41, key);
+  assert.deepEqual(calls, [
+    "https://open-api.bser.io/v2/user/stats/uid/uid%2Fa/41/3",
+    "https://open-api.bser.io/v1/rank/uid/uid%2Fa/41/3",
+  ]);
 });
 
 test("legacy userId response remains readable", async () => {

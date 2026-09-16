@@ -11,6 +11,7 @@ import type { PriceAlertStore } from "../storage/price-alert-store.js";
 import type { StockStore } from "../storage/stock-store.js";
 import type { EternalReturnStore } from "../storage/eternal-return-store.js";
 import type { EternalReturnCollector } from "../services/eternal-return-collector.js";
+import type { EternalReturnProfileService } from "../services/eternal-return-profile.js";
 
 export interface PriceAlertRefresher {
   refresh(): void;
@@ -41,6 +42,7 @@ export interface BotCommandContext {
   erApiKey?: string;
   eternalReturnStore?: EternalReturnStore;
   eternalReturnCollector?: EternalReturnCollector;
+  eternalReturnProfileService?: EternalReturnProfileService;
   notificationChannelId?: string;
   priceAlertMonitor?: PriceAlertRefresher;
   priceAlertStore?: PriceAlertStore;

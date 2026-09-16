@@ -78,6 +78,27 @@ export interface EternalReturnRank {
   serverCode?: number;
 }
 
+export interface EternalReturnCharacterStat {
+  characterCode?: number;
+  characterNum?: number;
+  totalGames?: number;
+  usages?: number;
+  wins?: number;
+  top3?: number;
+  [key: string]: unknown;
+}
+
+export interface EternalReturnUserStats {
+  nickname?: string;
+  mmr?: number;
+  rank?: number;
+  rankSize?: number;
+  totalGames?: number;
+  totalWins?: number;
+  characterStats?: EternalReturnCharacterStat[];
+  [key: string]: unknown;
+}
+
 export interface ReferenceRow {
   code?: number | string;
   maskCode?: number | string;
@@ -92,6 +113,7 @@ export interface EternalReturnResponse {
   gameResults?: EternalReturnGame[];
   games?: EternalReturnGame[];
   userRank?: EternalReturnRank;
+  userStats?: EternalReturnUserStats | EternalReturnUserStats[];
   freeCharacters?: number[];
   data?: ReferenceRow[] | { l10Path?: string };
   next?: number | string;
@@ -217,8 +239,27 @@ export async function getRankByNickname(
   options: EternalReturnRequestOptions = {},
 ): Promise<EternalReturnResponse> {
   const userId = await getUserIdByNickname(nickname, apiKey, options);
+  return getRankByUserId(userId, seasonId, apiKey, options);
+}
+
+export function getRankByUserId(
+  userId: string,
+  seasonId: number,
+  apiKey: string,
+  options: EternalReturnRequestOptions = {},
+): Promise<EternalReturnResponse> {
+  return erGet(`/v1/rank/uid/${encodeURIComponent(userId)}/${seasonId}/${TEAM_MODE.squad}`, apiKey, options);
+}
+
+export function getUserStatsByUserId(
+  userId: string,
+  seasonId: number,
+  matchingMode: number,
+  apiKey: string,
+  options: EternalReturnRequestOptions = {},
+): Promise<EternalReturnResponse> {
   return erGet(
-    `/v1/rank/uid/${encodeURIComponent(userId)}/${seasonId}/${TEAM_MODE.squad}`,
+    `/v2/user/stats/uid/${encodeURIComponent(userId)}/${seasonId}/${matchingMode}`,
     apiKey,
     options,
   );

@@ -29,13 +29,21 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const REFERENCE_CACHE_TYPE = "reference-bundle";
 const REFERENCE_CACHE_KEY = "Korean";
 
+export interface EternalReturnSeason extends ReferenceRow {
+  seasonID?: number;
+  seasonName?: string;
+  seasonStart?: string;
+  seasonEnd?: string;
+  isCurrent?: number;
+}
+
 interface StoredReferenceBundle {
   hash: unknown;
   characters: ReferenceRow[];
   items: ReferenceRow[];
   areas: ReferenceRow[];
   traits: ReferenceRow[];
-  seasons: ReferenceRow[];
+  seasons: EternalReturnSeason[];
   l10n: Array<[string, string]>;
 }
 
@@ -273,6 +281,25 @@ export function getReferenceData(
   });
   referenceCache.set(apiKey, { expiresAt: Date.now() + CACHE_TTL_MS, promise });
   return promise;
+}
+
+export async function getSeasonData(
+  apiKey: string,
+  options: EternalReturnRequestOptions = {},
+  store?: EternalReturnStore,
+): Promise<EternalReturnSeason[]> {
+  if (store) {
+    await getReferenceData(apiKey, options, store);
+    return store.getReference<StoredReferenceBundle>(REFERENCE_CACHE_TYPE, REFERENCE_CACHE_KEY)?.payload.seasons ?? [];
+  }
+  const rows = await fetchDataTable(apiKey, "Season", options);
+  return rows as EternalReturnSeason[];
+}
+
+export function findCurrentSeason(seasons: readonly EternalReturnSeason[]): EternalReturnSeason | undefined {
+  return [...seasons]
+    .filter(season => Number(season.isCurrent) === 1 && Number.isSafeInteger(Number(season.seasonID)))
+    .sort((a, b) => Number(b.seasonID) - Number(a.seasonID))[0];
 }
 
 function referencesFromBundle(bundle: StoredReferenceBundle): EternalReturnReferences {
