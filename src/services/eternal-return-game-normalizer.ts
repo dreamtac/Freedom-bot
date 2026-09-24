@@ -52,7 +52,7 @@ const JSON_FIELDS = [
   "equipment", "killMonsters", "creditSource", "masteryLevel", "skillLevelInfo",
   "skillOrderInfo", "foodCraftCount", "beverageCraftCount", "airSupplyOpenCount",
   "getBoriReward", "activeInstallation", "useGadget", "gimmickEvidenceLockerCount",
-  "gimmickEvidenceLockerItem",
+  "gimmickEvidenceLockerItem", "receiptDetails",
 ] as const;
 
 const MIXED_FIELDS = ["placeOfStart", "placeOfDeath"] as const;

@@ -20,6 +20,8 @@ export interface EternalReturnCollectionResult {
   pagesFetched: number;
   recordsSeen: number;
   storedGames: number;
+  /** 완료 경계 이후 최신 수집에서 발견된 경기. 최초 수집과 백필은 비어 있다. */
+  newGameIds: number[];
   reachedBoundary: boolean;
   exhausted: boolean;
   next?: string;
@@ -144,6 +146,7 @@ export class EternalReturnCollector {
     let pagesFetched = 0;
     let recordsSeen = 0;
     let storedGames = 0;
+    const newGameIds = new Set<number>();
     let reachedBoundary = false;
     let exhausted = false;
     const cursors = new Set<string>();
@@ -171,9 +174,12 @@ export class EternalReturnCollector {
         if (games.length > 0) pageSignatures.add(signature);
         reachedBoundary = boundary !== undefined && games.some(game => game.gameId === boundary);
         exhausted = games.length === 0 || next === undefined;
+        const pageNewGameIds = boundary === undefined ? [] : gameIdsBeforeBoundary(games, boundary);
+        for (const gameId of pageNewGameIds) newGameIds.add(gameId);
         storedGames += countNewGames(this.#store, userId, games);
         this.#store.saveGamePage(userId, games, {
           kind: "latest", status: "running", cursor: next ?? null,
+          receiptEligibleGameIds: pageNewGameIds,
         }, this.#now());
 
         if (boundary === undefined || reachedBoundary || exhausted) break;
@@ -195,7 +201,7 @@ export class EternalReturnCollector {
         }, completedAt);
       }
       return this.#result(userId, nickname, {
-        pagesFetched, recordsSeen, storedGames, reachedBoundary, exhausted,
+        pagesFetched, recordsSeen, storedGames, newGameIds: [...newGameIds], reachedBoundary, exhausted,
         ...(firstNext ? { next: firstNext } : {}),
       });
     } catch (error: unknown) {
@@ -260,7 +266,7 @@ export class EternalReturnCollector {
         succeededAt: completedAt, error: null,
       }, completedAt);
       return this.#result(userId, user.nickname, {
-        pagesFetched, recordsSeen, storedGames, reachedBoundary: false, exhausted,
+        pagesFetched, recordsSeen, storedGames, newGameIds: [], reachedBoundary: false, exhausted,
         ...(cursor ? { next: cursor } : {}),
       }, query);
     } catch (error: unknown) {
@@ -300,6 +306,18 @@ function countNewGames(
 ): number {
   const ids = [...new Set(games.map(game => game.gameId))];
   return ids.length - store.countExistingGameIds(userId, ids);
+}
+
+function gameIdsBeforeBoundary(
+  games: readonly (EternalReturnGame & { gameId: number })[],
+  boundary: number,
+): number[] {
+  const ids: number[] = [];
+  for (const game of games) {
+    if (game.gameId === boundary) break;
+    ids.push(game.gameId);
+  }
+  return ids;
 }
 
 function normalizeCursor(value: number | string | undefined): string | undefined {

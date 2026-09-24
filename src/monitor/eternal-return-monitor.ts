@@ -1,16 +1,22 @@
 import type { EternalReturnCollector } from "../services/eternal-return-collector.js";
-import type { EternalReturnStore } from "../storage/eternal-return-store.js";
+import type {
+  EternalReturnGameReceiptInput,
+  EternalReturnReceiptPlayerInput,
+  EternalReturnStore,
+} from "../storage/eternal-return-store.js";
 
 export interface EternalReturnMonitorResult {
   users: number;
   succeeded: number;
   failed: number;
   storedGames: number;
+  queuedReceipts: number;
 }
 
 interface EternalReturnMonitorOptions {
   store: Pick<EternalReturnStore,
-    "listAutoRefreshUsers" | "getUser" | "setAutoRefresh" | "countGames" | "getCollectionState">;
+    "listAutoRefreshUsers" | "listReceiptEnabledUsers" | "listUnqueuedReceiptGames"
+    | "enqueueGameReceiptBatch" | "getUser" | "setAutoRefresh" | "countGames" | "getCollectionState">;
   collector: Pick<EternalReturnCollector, "refreshNickname" | "backfill">;
   intervalMs: number;
   setTimer?: typeof setTimeout;
@@ -67,7 +73,8 @@ export class EternalReturnMonitor {
       const result = await this.checkNow();
       if (result.users > 0) {
         this.#logger.log(
-          `이터널 리턴 자동 갱신: ${result.succeeded}/${result.users}명 성공, 새 경기 ${result.storedGames}개`,
+          `이터널 리턴 자동 갱신: ${result.succeeded}/${result.users}명 성공, `
+          + `새 경기 ${result.storedGames}개, 게임 결과 ${result.queuedReceipts}개 대기`,
         );
       }
     } catch (error: unknown) {
@@ -115,7 +122,48 @@ export class EternalReturnMonitor {
         this.#logger.error(`이터널 리턴 자동 갱신 실패: ${user.nickname} (${user.userId})`, error);
       }
     }
-    return { users: usersByNickname.size, succeeded, failed, storedGames };
+    const queuedReceipts = this.#queueDetectedGames();
+    return { users: usersByNickname.size, succeeded, failed, storedGames, queuedReceipts };
+  }
+
+  #queueDetectedGames(): number {
+    const grouped = new Map<string, {
+      input: EternalReturnGameReceiptInput;
+      players: Map<string, EternalReturnReceiptPlayerInput>;
+    }>();
+    for (const user of this.#store.listReceiptEnabledUsers()) {
+      if (!user.receiptChannelId) continue;
+      for (const game of this.#store.listUnqueuedReceiptGames(user.userId, user.receiptChannelId)) {
+        const key = `${user.receiptChannelId}\0${game.gameId}`;
+        let group = grouped.get(key);
+        if (!group) {
+          const players = new Map<string, EternalReturnReceiptPlayerInput>();
+          group = {
+            input: {
+              channelId: user.receiptChannelId,
+              gameId: game.gameId,
+              detectedAt: game.collectedAt,
+              players: [],
+            },
+            players,
+          };
+          grouped.set(key, group);
+        } else if (game.collectedAt < (group.input.detectedAt ?? game.collectedAt)) {
+          group.input.detectedAt = game.collectedAt;
+        }
+        group.players.set(user.userId, {
+          userId: user.userId,
+          nickname: user.nickname,
+          ...(game.teamNumber !== undefined ? { teamNumber: game.teamNumber } : {}),
+          isMonitored: true,
+        });
+      }
+    }
+    const inputs = [...grouped.values()].map(group => ({
+      ...group.input,
+      players: [...group.players.values()],
+    }));
+    return inputs.length === 0 ? 0 : this.#store.enqueueGameReceiptBatch(inputs);
   }
 }
 

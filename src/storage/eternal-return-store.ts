@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 
 import Database from "better-sqlite3";
 
@@ -8,14 +9,58 @@ import type { EternalReturnGame } from "../sources/eternal-return.js";
 
 export type EternalReturnCollectionKind = "latest" | "backfill";
 export type EternalReturnCollectionStatus = "idle" | "running" | "succeeded" | "failed";
+export type EternalReturnReceiptStatus = "pending" | "sending" | "sent" | "failed" | "suppressed";
 
 export interface EternalReturnUserRecord {
   userId: string;
   nickname: string;
   normalizedNickname: string;
   autoRefresh: boolean;
+  receiptEnabled: boolean;
+  receiptChannelId?: string;
   firstSeenAt: Date;
   lastSeenAt: Date;
+}
+
+export interface EternalReturnReceiptPlayerInput {
+  userId: string;
+  nickname: string;
+  teamNumber?: number;
+  isMonitored?: boolean;
+}
+
+export interface EternalReturnGameReceipt {
+  receiptId: string;
+  gameId: number;
+  channelId: string;
+  status: EternalReturnReceiptStatus;
+  detectedAt: Date;
+  sentAt?: Date;
+  messageId?: string;
+  attemptCount: number;
+  lastAttemptAt?: Date;
+  lastError?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface EternalReturnGameReceiptPlayer {
+  receiptId: string;
+  gameId: number;
+  userId: string;
+  nickname: string;
+  teamNumber?: number;
+  isMonitored: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface EternalReturnGameReceiptInput {
+  gameId: number;
+  channelId: string;
+  players?: readonly EternalReturnReceiptPlayerInput[];
+  status?: "pending" | "suppressed";
+  detectedAt?: Date;
 }
 
 export interface StoredEternalReturnGame extends EternalReturnGame {
@@ -58,6 +103,8 @@ export interface EternalReturnCollectionState {
 export interface EternalReturnCollectionUpdate {
   kind: EternalReturnCollectionKind;
   status: EternalReturnCollectionStatus;
+  /** 최신 수집에서 완료 경계보다 앞에 있어 게임 결과 알림 후보가 된 경기 ID. */
+  receiptEligibleGameIds?: readonly number[];
   cursor?: string | null;
   boundaryGameId?: number | null;
   attemptedAt?: Date;
@@ -92,8 +139,36 @@ interface UserRow {
   nickname: string;
   normalized_nickname: string;
   auto_refresh: number;
+  receipt_enabled: number;
+  receipt_channel_id: string | null;
   first_seen_at: number;
   last_seen_at: number;
+}
+
+interface ReceiptRow {
+  receipt_id: string;
+  game_id: number;
+  channel_id: string;
+  status: EternalReturnReceiptStatus;
+  detected_at: number;
+  sent_at: number | null;
+  message_id: string | null;
+  attempt_count: number;
+  last_attempt_at: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ReceiptPlayerRow {
+  receipt_id: string;
+  game_id: number;
+  user_id: string;
+  nickname: string;
+  team_number: number | null;
+  is_monitored: number;
+  created_at: number;
+  updated_at: number;
 }
 
 interface GameRow extends Record<string, unknown> {
@@ -158,7 +233,91 @@ const NUMBER_FIELDS = {
   premade_matching_type: "premadeMatchingType",
   bot_added: "botAdded",
   best_weapon: "bestWeapon",
+  best_weapon_level: "bestWeaponLevel",
+  mmr_avg: "mmrAvg",
+  skin_code: "skinCode",
   trait_first_core: "traitFirstCore",
+  damage_to_player_basic: "damageToPlayer_basic",
+  damage_to_player_skill: "damageToPlayer_skill",
+  damage_to_player_item_skill: "damageToPlayer_itemSkill",
+  damage_to_player_direct: "damageToPlayer_direct",
+  damage_to_player_unique_skill: "damageToPlayer_uniqueSkill",
+  damage_to_player_trap: "damageToPlayer_trap",
+  damage_to_player_shield: "damageToPlayer_Shield",
+  damage_offseted_by_shield_player: "damageOffsetedByShield_Player",
+  damage_offseted_by_shield_monster: "damageOffsetedByShield_Monster",
+  add_telephoto_camera: "addTelephotoCamera",
+  remove_telephoto_camera: "removeTelephotoCamera",
+  use_recon_drone: "useReconDrone",
+  use_emp_drone: "useEmpDrone",
+  use_hyper_loop: "useHyperLoop",
+  use_security_console: "useSecurityConsole",
+  total_double_kill: "totalDoubleKill",
+  total_triple_kill: "totalTripleKill",
+  total_quadra_kill: "totalQuadraKill",
+  total_extra_kill: "totalExtraKill",
+  clutch_count: "clutchCount",
+  terminate_count: "terminateCount",
+  team_elimination: "teamElimination",
+  team_down: "teamDown",
+  total_gain_vf_credit: "totalGainVFCredit",
+  total_use_vf_credit: "totalUseVFCredit",
+  cr_get_animal: "crGetAnimal",
+  cr_get_mutant: "crGetMutant",
+  cr_get_phase_start: "crGetPhaseStart",
+  cr_get_kill: "crGetKill",
+  cr_get_assist: "crGetAssist",
+  cr_get_time_elapsed: "crGetTimeElapsed",
+  cr_get_credit_bonus: "crGetCreditBonus",
+  cr_get_by_guide_robot: "crGetByGuideRobot",
+  kill_alpha_gain_vf_credit: "killAlphaGainVFCredit",
+  kill_omega_gain_vf_credit: "killOmegaGainVFCredit",
+  kill_gamma_gain_vf_credit: "killGammaGainVFCredit",
+  kill_wickline_gain_vf_credit: "killWicklineGainVFCredit",
+  kill_item_bounty_gain_vf_credit: "killItemBountyGainVFCredit",
+  kill_drone_gain_vf_credit: "killDroneGainVFCredit",
+  kill_turret_gain_vf_credit: "killTurretGainVFCredit",
+  item_shredder_gain_vf_credit: "itemShredderGainVFCredit",
+  kiosk_exchange_credit: "kioskExchangeCredit",
+  remote_drone_use_vf_credit_myself: "remoteDroneUseVFCreditMySelf",
+  remote_drone_use_vf_credit_ally: "remoteDroneUseVFCreditAlly",
+  transfer_console_material_use_vf_credit: "transferConsoleFromMaterialUseVFCredit",
+  transfer_console_escape_key_use_vf_credit: "transferConsoleFromEscapeKeyUseVFCredit",
+  transfer_console_revival_use_vf_credit: "transferConsoleFromRevivalUseVFCredit",
+  credit_revival_count: "creditRevivalCount",
+  credit_revived_others_count: "creditRevivedOthersCount",
+  tactical_skill_upgrade_use_vf_credit: "tacticalSkillUpgradeUseVFCredit",
+  cr_use_remote_drone: "crUseRemoteDrone",
+  cr_use_upgrade_tactical_skill: "crUseUpgradeTacticalSkill",
+  cr_use_tree_of_life: "crUseTreeOfLife",
+  cr_use_meteorite: "crUseMeteorite",
+  cr_use_mythril: "crUseMythril",
+  cr_use_force_core: "crUseForceCore",
+  cr_use_vf_blood_sample: "crUseVFBloodSample",
+  cr_use_activation_module: "crUseActivationModule",
+  cr_use_rootkit: "crUseRootkit",
+  damage_to_guide_robot: "damageToGuideRobot",
+  use_guide_robot: "useGuideRobot",
+  fishing_count: "fishingCount",
+  use_emoticon_count: "useEmoticonCount",
+  craft_mythic: "craftMythic",
+  enter_dimension_rift: "enterDimensionRift",
+  enter_dimension_empowered_rift: "enterDimensionEmpoweredRift",
+  win_from_dimension_rift: "winFromDimensionRift",
+  win_from_dimension_empowered_rift: "winFromDimensionEmpoweredRift",
+  enter_turbulent_rift: "enterTurbulentRift",
+  get_buff_cube_red: "getBuffCubeRed",
+  get_buff_cube_purple: "getBuffCubePurple",
+  get_buff_cube_green: "getBuffCubeGreen",
+  get_buff_cube_gold: "getBuffCubeGold",
+  get_buff_cube_sky_blue: "getBuffCubeSkyBlue",
+  sum_get_buff_cube: "sumGetBuffCube",
+  gimmick_apple_dropped: "gimmickAppleDropped",
+  gimmick_drum_use_count: "gimmickDrumUseCount",
+  gimmick_drum_attack_count: "gimmickDrumAttackCount",
+  gimmick_drum_dropped_hit_count: "gimmickDrumDroppedHitCount",
+  gimmick_hospital_discount_rate: "gimmickHospitalDiscountRate",
+  gimmick_grandfather_clock_use_count: "gimmickGrandfatherClockUseCount",
 } as const;
 
 const JSON_FIELDS = {
@@ -168,6 +327,25 @@ const JSON_FIELDS = {
   place_of_start_json: "placeOfStart",
   place_of_death_json: "placeOfDeath",
   kill_monsters_json: "killMonsters",
+  credit_source_json: "creditSource",
+  credit_timeline_json: "totalVFCredits",
+  used_credit_timeline_json: "usedVFCredits",
+  mastery_levels_json: "masteryLevel",
+  skill_level_info_json: "skillLevelInfo",
+  skill_order_json: "skillOrderInfo",
+  food_craft_count_json: "foodCraftCount",
+  beverage_craft_count_json: "beverageCraftCount",
+  air_supply_open_count_json: "airSupplyOpenCount",
+  get_bori_reward_json: "getBoriReward",
+  active_installation_json: "activeInstallation",
+  use_gadget_json: "useGadget",
+  gimmick_evidence_locker_count_json: "gimmickEvidenceLockerCount",
+  gimmick_evidence_locker_item_json: "gimmickEvidenceLockerItem",
+  item_transferred_console_json: "itemTransferredConsole",
+  item_transferred_drone_json: "itemTransferredDrone",
+  receipt_details_json: "receiptDetails",
+  extra_json: "extra",
+  normalization_warnings_json: "normalizationWarnings",
 } as const;
 
 const OPTIONAL_FIELD_NAMES = new Set<string>([
@@ -184,6 +362,7 @@ export class EternalReturnStore {
   private constructor(database: Database.Database) {
     this.#database = database;
     this.#migrate();
+    this.recoverInterruptedGameReceipts();
   }
 
   static async open(filePath: string): Promise<EternalReturnStore> {
@@ -235,6 +414,10 @@ export class EternalReturnStore {
     const current = this.upsertUser(userId, nickname, observedAt);
     const duplicates = this.findUsersByNickname(nickname).filter(user => user.userId !== userId);
     if (duplicates.length === 0) return current;
+    const receiptEnabled = current.receiptEnabled || duplicates.some(user => user.receiptEnabled);
+    const receiptChannelId = current.receiptChannelId
+      ?? duplicates.find(user => user.receiptEnabled && user.receiptChannelId)?.receiptChannelId
+      ?? duplicates.find(user => user.receiptChannelId)?.receiptChannelId;
 
     const merge = this.#database.transaction(() => {
       for (const duplicate of duplicates) {
@@ -288,6 +471,16 @@ export class EternalReturnStore {
         this.#database.prepare("UPDATE er_collection_state SET user_id = ? WHERE user_id = ?")
           .run(userId, duplicate.userId);
 
+        this.#database.prepare(`
+          DELETE FROM er_game_receipt_players AS old
+          WHERE old.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_game_receipt_players AS fresh
+            WHERE fresh.receipt_id = old.receipt_id AND fresh.user_id = ?
+          )
+        `).run(duplicate.userId, userId);
+        this.#database.prepare("UPDATE er_game_receipt_players SET user_id = ? WHERE user_id = ?")
+          .run(userId, duplicate.userId);
+
         const aliases = this.#database.prepare(`
           SELECT nickname, normalized_nickname, first_seen_at, last_seen_at
           FROM er_user_nicknames WHERE user_id = ?
@@ -311,9 +504,12 @@ export class EternalReturnStore {
         this.#database.prepare("DELETE FROM er_users WHERE user_id = ?").run(duplicate.userId);
       }
       this.#database.prepare(`
-        UPDATE er_users SET auto_refresh = ?, first_seen_at = ? WHERE user_id = ?
+        UPDATE er_users SET auto_refresh = ?, receipt_enabled = ?, receipt_channel_id = ?,
+          first_seen_at = ? WHERE user_id = ?
       `).run(
         duplicates.some(user => user.autoRefresh) || current.autoRefresh ? 1 : 0,
+        receiptEnabled ? 1 : 0,
+        receiptChannelId ?? null,
         Math.min(current.firstSeenAt.getTime(), ...duplicates.map(user => user.firstSeenAt.getTime())),
         userId,
       );
@@ -348,6 +544,235 @@ export class EternalReturnStore {
       .all() as UserRow[]).map(toUser);
   }
 
+  setReceiptSettings(userId: string, enabled: boolean, channelId?: string | null): void {
+    const previous = this.getUser(userId);
+    if (!previous) throw new Error(`알 수 없는 이터널 리턴 UID입니다: ${userId}`);
+    const channel = channelId === undefined ? undefined : normalizeOptionalChannelId(channelId);
+    const result = channel === undefined
+      ? this.#database.prepare("UPDATE er_users SET receipt_enabled = ? WHERE user_id = ?")
+        .run(enabled ? 1 : 0, userId)
+      : this.#database.prepare(`
+          UPDATE er_users SET receipt_enabled = ?, receipt_channel_id = ? WHERE user_id = ?
+        `).run(enabled ? 1 : 0, channel, userId);
+    if (result.changes === 0) throw new Error(`알 수 없는 이터널 리턴 UID입니다: ${userId}`);
+    const effectiveChannel = channel === undefined ? previous.receiptChannelId : channel ?? undefined;
+    if (enabled && effectiveChannel
+      && (!previous.receiptEnabled || previous.receiptChannelId !== effectiveChannel)) {
+      this.initializeReceiptBaseline(effectiveChannel, [userId]);
+    }
+  }
+
+  listReceiptEnabledUsers(): EternalReturnUserRecord[] {
+    return (this.#database.prepare("SELECT * FROM er_users WHERE receipt_enabled = 1 ORDER BY nickname")
+      .all() as UserRow[]).map(toUser);
+  }
+
+  enqueueGameReceipt(input: EternalReturnGameReceiptInput): EternalReturnGameReceipt {
+    const gameId = normalizeGameId(input.gameId);
+    const channelId = normalizeChannelId(input.channelId);
+    const detectedAt = input.detectedAt ?? new Date();
+    const timestamp = detectedAt.getTime();
+    const status = input.status ?? "pending";
+    const receiptId = createReceiptId(channelId, gameId);
+    let storedReceiptId = receiptId;
+    const transaction = this.#database.transaction(() => {
+      this.#database.prepare(`
+        INSERT INTO er_game_receipts (
+          receipt_id, game_id, channel_id, status, detected_at, attempt_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(channel_id, game_id) DO NOTHING
+      `).run(receiptId, gameId, channelId, status, timestamp, timestamp, timestamp);
+      const stored = this.#database.prepare(`
+        SELECT receipt_id FROM er_game_receipts WHERE channel_id = ? AND game_id = ?
+      `).get(channelId, gameId) as { receipt_id: string };
+      storedReceiptId = stored.receipt_id;
+      this.#upsertReceiptPlayers(storedReceiptId, gameId, input.players ?? [], timestamp);
+    });
+    transaction();
+    return this.getGameReceipt(storedReceiptId)!;
+  }
+
+  /** 여러 유저에게서 감지된 경기들을 한 트랜잭션으로 큐에 넣고 새 결과 개수를 반환한다. */
+  enqueueGameReceiptBatch(inputs: readonly EternalReturnGameReceiptInput[]): number {
+    const normalized = inputs.map(input => ({
+      input,
+      gameId: normalizeGameId(input.gameId),
+      channelId: normalizeChannelId(input.channelId),
+      timestamp: (input.detectedAt ?? new Date()).getTime(),
+      status: input.status ?? "pending",
+    }));
+    let inserted = 0;
+    const transaction = this.#database.transaction(() => {
+      for (const item of normalized) {
+        const proposedReceiptId = createReceiptId(item.channelId, item.gameId);
+        const result = this.#database.prepare(`
+          INSERT INTO er_game_receipts (
+            receipt_id, game_id, channel_id, status, detected_at, attempt_count, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+          ON CONFLICT(channel_id, game_id) DO NOTHING
+        `).run(proposedReceiptId, item.gameId, item.channelId, item.status,
+          item.timestamp, item.timestamp, item.timestamp);
+        inserted += result.changes;
+        const stored = this.#database.prepare(`
+          SELECT receipt_id FROM er_game_receipts WHERE channel_id = ? AND game_id = ?
+        `).get(item.channelId, item.gameId) as { receipt_id: string };
+        this.#upsertReceiptPlayers(stored.receipt_id, item.gameId, item.input.players ?? [], item.timestamp);
+      }
+    });
+    transaction();
+    return inserted;
+  }
+
+  getGameReceipt(receiptId: string): EternalReturnGameReceipt | undefined {
+    const row = this.#database.prepare("SELECT * FROM er_game_receipts WHERE receipt_id = ?")
+      .get(receiptId) as ReceiptRow | undefined;
+    return row ? toReceipt(row) : undefined;
+  }
+
+  getGameReceiptByChannelGame(channelId: string, gameId: number): EternalReturnGameReceipt | undefined {
+    const row = this.#database.prepare(`
+      SELECT * FROM er_game_receipts WHERE channel_id = ? AND game_id = ?
+    `).get(normalizeChannelId(channelId), normalizeGameId(gameId)) as ReceiptRow | undefined;
+    return row ? toReceipt(row) : undefined;
+  }
+
+  listGameReceiptPlayers(receiptId: string): EternalReturnGameReceiptPlayer[] {
+    const rows = this.#database.prepare(`
+      SELECT * FROM er_game_receipt_players WHERE receipt_id = ?
+      ORDER BY team_number ASC, nickname ASC, user_id ASC
+    `).all(receiptId) as ReceiptPlayerRow[];
+    return rows.map(toReceiptPlayer);
+  }
+
+  listUnqueuedReceiptGames(userId: string, channelId: string, limit = 500): StoredEternalReturnGame[] {
+    requireUser(this.#database, userId);
+    const rows = this.#database.prepare(`
+      SELECT g.* FROM er_games g
+      WHERE g.user_id = ? AND g.receipt_eligible = 1 AND NOT EXISTS (
+        SELECT 1 FROM er_game_receipts r
+        JOIN er_game_receipt_players p ON p.receipt_id = r.receipt_id
+        WHERE r.channel_id = ? AND r.game_id = g.game_id AND p.user_id = g.user_id
+      )
+      ORDER BY g.started_at ASC, g.game_id ASC LIMIT ?
+    `).all(userId, normalizeChannelId(channelId), clampLimit(limit)) as GameRow[];
+    return rows.map(toGame);
+  }
+
+  claimNextGameReceipt(channelId: string, now = new Date()): EternalReturnGameReceipt | undefined {
+    const normalizedChannelId = normalizeChannelId(channelId);
+    const timestamp = now.getTime();
+    const claim = this.#database.transaction(() => {
+      const candidate = this.#database.prepare(`
+        SELECT receipt_id FROM er_game_receipts
+        WHERE channel_id = ? AND status = 'pending'
+        ORDER BY detected_at ASC, receipt_id ASC LIMIT 1
+      `).get(normalizedChannelId) as { receipt_id: string } | undefined;
+      if (!candidate) return undefined;
+      const result = this.#database.prepare(`
+        UPDATE er_game_receipts SET
+          status = 'sending', attempt_count = attempt_count + 1,
+          last_attempt_at = ?, last_error = NULL, updated_at = ?
+        WHERE receipt_id = ? AND status = 'pending'
+      `).run(timestamp, timestamp, candidate.receipt_id);
+      return result.changes === 1 ? this.getGameReceipt(candidate.receipt_id) : undefined;
+    });
+    return claim();
+  }
+
+  markGameReceiptSent(receiptId: string, messageId: string, sentAt = new Date()): EternalReturnGameReceipt {
+    const trimmedMessageId = messageId.trim();
+    if (!trimmedMessageId) throw new Error("디스코드 메시지 ID가 필요합니다.");
+    const timestamp = sentAt.getTime();
+    const result = this.#database.prepare(`
+      UPDATE er_game_receipts SET status = 'sent', sent_at = ?, message_id = ?,
+        last_error = NULL, updated_at = ?
+      WHERE receipt_id = ? AND status = 'sending'
+    `).run(timestamp, trimmedMessageId, timestamp, receiptId);
+    if (result.changes === 0) throw invalidReceiptTransition(receiptId, "sent");
+    return this.getGameReceipt(receiptId)!;
+  }
+
+  markGameReceiptFailed(receiptId: string, error: string, failedAt = new Date()): EternalReturnGameReceipt {
+    const timestamp = failedAt.getTime();
+    const result = this.#database.prepare(`
+      UPDATE er_game_receipts SET status = 'failed', last_error = ?, updated_at = ?
+      WHERE receipt_id = ? AND status = 'sending'
+    `).run(error.trim() || "알 수 없는 발송 오류", timestamp, receiptId);
+    if (result.changes === 0) throw invalidReceiptTransition(receiptId, "failed");
+    return this.getGameReceipt(receiptId)!;
+  }
+
+  retryFailedGameReceipts(channelId?: string, now = new Date()): number {
+    const timestamp = now.getTime();
+    const result = channelId === undefined
+      ? this.#database.prepare(`
+          UPDATE er_game_receipts SET status = 'pending', last_error = NULL, updated_at = ?
+          WHERE status = 'failed'
+        `).run(timestamp)
+      : this.#database.prepare(`
+          UPDATE er_game_receipts SET status = 'pending', last_error = NULL, updated_at = ?
+          WHERE status = 'failed' AND channel_id = ?
+        `).run(timestamp, normalizeChannelId(channelId));
+    return result.changes;
+  }
+
+  recoverInterruptedGameReceipts(now = new Date()): number {
+    const timestamp = now.getTime();
+    const result = this.#database.prepare(`
+      UPDATE er_game_receipts SET status = 'pending',
+        last_error = '발송 중 프로세스가 종료되어 다시 대기열에 등록되었습니다.', updated_at = ?
+      WHERE status = 'sending'
+    `).run(timestamp);
+    return result.changes;
+  }
+
+  /**
+   * 이미 수집된 경기는 최초 배포 때 알림으로 보내지 않는다. 같은 gameId를 가진
+   * 등록 친구들은 한 suppressed 결과에 묶이며 반복 실행해도 기존 상태를 바꾸지 않는다.
+   */
+  initializeReceiptBaseline(channelId: string, userIds: readonly string[], now = new Date()): number {
+    const normalizedChannelId = normalizeChannelId(channelId);
+    const uniqueUserIds = [...new Set(userIds.map(value => value.trim()).filter(Boolean))];
+    if (uniqueUserIds.length === 0) return 0;
+    for (const userId of uniqueUserIds) requireUser(this.#database, userId);
+    const placeholders = uniqueUserIds.map(() => "?").join(", ");
+    const rows = this.#database.prepare(`
+      SELECT g.game_id, g.user_id, u.nickname, g.team_number
+      FROM er_games g JOIN er_users u ON u.user_id = g.user_id
+      WHERE g.user_id IN (${placeholders})
+      ORDER BY g.game_id ASC, g.user_id ASC
+    `).all(...uniqueUserIds) as Array<{
+      game_id: number; user_id: string; nickname: string; team_number: number | null;
+    }>;
+    const grouped = new Map<number, EternalReturnReceiptPlayerInput[]>();
+    for (const row of rows) {
+      const players = grouped.get(row.game_id) ?? [];
+      players.push({ userId: row.user_id, nickname: row.nickname,
+        ...(row.team_number !== null ? { teamNumber: row.team_number } : {}), isMonitored: true });
+      grouped.set(row.game_id, players);
+    }
+    const timestamp = now.getTime();
+    let inserted = 0;
+    const transaction = this.#database.transaction(() => {
+      for (const [gameId, players] of grouped) {
+        const receiptId = createReceiptId(normalizedChannelId, gameId);
+        const result = this.#database.prepare(`
+          INSERT INTO er_game_receipts (
+            receipt_id, game_id, channel_id, status, detected_at, attempt_count, created_at, updated_at
+          ) VALUES (?, ?, ?, 'suppressed', ?, 0, ?, ?)
+          ON CONFLICT(channel_id, game_id) DO NOTHING
+        `).run(receiptId, gameId, normalizedChannelId, timestamp, timestamp, timestamp);
+        inserted += result.changes;
+        const stored = this.#database.prepare(`
+          SELECT receipt_id FROM er_game_receipts WHERE channel_id = ? AND game_id = ?
+        `).get(normalizedChannelId, gameId) as { receipt_id: string };
+        this.#upsertReceiptPlayers(stored.receipt_id, gameId, players, timestamp);
+      }
+    });
+    transaction();
+    return inserted;
+  }
+
   saveGamePage(
     userId: string,
     games: readonly EternalReturnGame[],
@@ -363,6 +788,14 @@ export class EternalReturnStore {
         const values = gameValues(userId, game, timestamp);
         if (!values) continue;
         changed += statement.run(values).changes;
+      }
+      if (collection?.kind === "latest") {
+        const eligibleIds = [...new Set((collection.receiptEligibleGameIds ?? [])
+          .filter(gameId => Number.isSafeInteger(gameId) && gameId > 0))];
+        const markEligible = this.#database.prepare(`
+          UPDATE er_games SET receipt_eligible = 1 WHERE user_id = ? AND game_id = ?
+        `);
+        for (const gameId of eligibleIds) markEligible.run(userId, gameId);
       }
       if (collection) this.#writeCollectionState(userId, collection, timestamp);
     });
@@ -522,6 +955,31 @@ export class EternalReturnStore {
     };
   }
 
+  #upsertReceiptPlayers(
+    receiptId: string,
+    gameId: number,
+    players: readonly EternalReturnReceiptPlayerInput[],
+    timestamp: number,
+  ): void {
+    const statement = this.#database.prepare(`
+      INSERT INTO er_game_receipt_players (
+        receipt_id, game_id, user_id, nickname, team_number, is_monitored, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(receipt_id, user_id) DO UPDATE SET
+        nickname = excluded.nickname,
+        team_number = COALESCE(excluded.team_number, er_game_receipt_players.team_number),
+        is_monitored = MAX(er_game_receipt_players.is_monitored, excluded.is_monitored),
+        updated_at = excluded.updated_at
+    `);
+    for (const player of players) {
+      const playerUserId = player.userId.trim();
+      const playerNickname = player.nickname.trim();
+      if (!playerUserId || !playerNickname) continue;
+      statement.run(receiptId, gameId, playerUserId, playerNickname,
+        normalizeOptionalInteger(player.teamNumber), player.isMonitored ? 1 : 0, timestamp, timestamp);
+    }
+  }
+
   #writeCollectionState(userId: string, update: EternalReturnCollectionUpdate, now: number): void {
     this.#database.prepare(`
       INSERT INTO er_collection_state (
@@ -559,6 +1017,8 @@ export class EternalReturnStore {
         nickname TEXT NOT NULL,
         normalized_nickname TEXT NOT NULL,
         auto_refresh INTEGER NOT NULL DEFAULT 0 CHECK(auto_refresh IN (0, 1)),
+        receipt_enabled INTEGER NOT NULL DEFAULT 0 CHECK(receipt_enabled IN (0, 1)),
+        receipt_channel_id TEXT,
         first_seen_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL
       );
@@ -587,6 +1047,7 @@ export class EternalReturnStore {
         team_number INTEGER, pre_made INTEGER, premade_matching_type INTEGER,
         bot_added INTEGER, best_weapon INTEGER, trait_first_core INTEGER,
         start_dtm TEXT, started_at INTEGER,
+        receipt_eligible INTEGER NOT NULL DEFAULT 0 CHECK(receipt_eligible IN (0, 1)),
         equipment_json TEXT, trait_first_sub_json TEXT, trait_second_sub_json TEXT,
         place_of_start_json TEXT, place_of_death_json TEXT, kill_monsters_json TEXT,
         collected_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
@@ -612,12 +1073,51 @@ export class EternalReturnStore {
         fetched_at INTEGER NOT NULL, expires_at INTEGER,
         PRIMARY KEY (user_id, season_id, matching_mode)
       );
+      CREATE TABLE IF NOT EXISTS er_game_receipts (
+        receipt_id TEXT PRIMARY KEY,
+        game_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'sending', 'sent', 'failed', 'suppressed')),
+        detected_at INTEGER NOT NULL,
+        sent_at INTEGER,
+        message_id TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (channel_id, game_id)
+      );
+      CREATE TABLE IF NOT EXISTS er_game_receipt_players (
+        receipt_id TEXT NOT NULL REFERENCES er_game_receipts(receipt_id) ON DELETE CASCADE,
+        game_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        nickname TEXT NOT NULL,
+        team_number INTEGER,
+        is_monitored INTEGER NOT NULL DEFAULT 0 CHECK(is_monitored IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (receipt_id, user_id)
+      );
       CREATE INDEX IF NOT EXISTS idx_er_users_nickname ON er_users(normalized_nickname, last_seen_at DESC);
       CREATE INDEX IF NOT EXISTS idx_er_user_nicknames_lookup ON er_user_nicknames(normalized_nickname, last_seen_at DESC);
       CREATE INDEX IF NOT EXISTS idx_er_games_user_time ON er_games(user_id, started_at DESC, game_id DESC);
       CREATE INDEX IF NOT EXISTS idx_er_games_analysis ON er_games(user_id, matching_mode, character_num, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_er_games_season ON er_games(user_id, season_id, matching_mode, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_er_game_receipts_status
+        ON er_game_receipts(status, detected_at, receipt_id);
+      CREATE INDEX IF NOT EXISTS idx_er_game_receipt_players_user
+        ON er_game_receipt_players(user_id, game_id);
     `);
+    ensureColumns(this.#database, "er_users", {
+      receipt_enabled: "INTEGER NOT NULL DEFAULT 0 CHECK(receipt_enabled IN (0, 1))",
+      receipt_channel_id: "TEXT",
+    });
+    ensureColumns(this.#database, "er_games", {
+      ...Object.fromEntries(Object.keys(NUMBER_FIELDS).map(column => [column, "REAL"])),
+      ...Object.fromEntries(Object.keys(JSON_FIELDS).map(column => [column, "TEXT"])),
+      receipt_eligible: "INTEGER NOT NULL DEFAULT 0 CHECK(receipt_eligible IN (0, 1))",
+    });
   }
 }
 
@@ -667,11 +1167,84 @@ function toGame(row: GameRow): StoredEternalReturnGame {
 
 function toUser(row: UserRow): EternalReturnUserRecord {
   return { userId: row.user_id, nickname: row.nickname, normalizedNickname: row.normalized_nickname,
-    autoRefresh: row.auto_refresh === 1, firstSeenAt: new Date(row.first_seen_at), lastSeenAt: new Date(row.last_seen_at) };
+    autoRefresh: row.auto_refresh === 1, receiptEnabled: row.receipt_enabled === 1,
+    ...(row.receipt_channel_id !== null ? { receiptChannelId: row.receipt_channel_id } : {}),
+    firstSeenAt: new Date(row.first_seen_at), lastSeenAt: new Date(row.last_seen_at) };
+}
+
+function toReceipt(row: ReceiptRow): EternalReturnGameReceipt {
+  return {
+    receiptId: row.receipt_id,
+    gameId: row.game_id,
+    channelId: row.channel_id,
+    status: row.status,
+    detectedAt: new Date(row.detected_at),
+    ...(row.sent_at !== null ? { sentAt: new Date(row.sent_at) } : {}),
+    ...(row.message_id !== null ? { messageId: row.message_id } : {}),
+    attemptCount: row.attempt_count,
+    ...(row.last_attempt_at !== null ? { lastAttemptAt: new Date(row.last_attempt_at) } : {}),
+    ...(row.last_error !== null ? { lastError: row.last_error } : {}),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+
+function toReceiptPlayer(row: ReceiptPlayerRow): EternalReturnGameReceiptPlayer {
+  return {
+    receiptId: row.receipt_id,
+    gameId: row.game_id,
+    userId: row.user_id,
+    nickname: row.nickname,
+    ...(row.team_number !== null ? { teamNumber: row.team_number } : {}),
+    isMonitored: row.is_monitored === 1,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
 }
 
 function normalizeNickname(value: string): string {
   return value.trim().normalize("NFKC").toLocaleLowerCase("ko-KR");
+}
+
+function normalizeChannelId(value: string): string {
+  const channelId = value.trim();
+  if (!channelId) throw new Error("게임 결과를 보낼 디스코드 채널 ID가 필요합니다.");
+  return channelId;
+}
+
+function normalizeOptionalChannelId(value: string | null): string | null {
+  if (value === null) return null;
+  return normalizeChannelId(value);
+}
+
+function normalizeGameId(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`올바르지 않은 게임 ID입니다: ${value}`);
+  return value;
+}
+
+function normalizeOptionalInteger(value: number | undefined): number | null {
+  return Number.isSafeInteger(value) ? value! : null;
+}
+
+function createReceiptId(channelId: string, gameId: number): string {
+  return createHash("sha256").update(channelId).update("\0").update(String(gameId)).digest("base64url").slice(0, 20);
+}
+
+function invalidReceiptTransition(receiptId: string, target: EternalReturnReceiptStatus): Error {
+  return new Error(`게임 결과 발송 상태를 ${target}(으)로 바꿀 수 없습니다: ${receiptId}`);
+}
+
+function ensureColumns(
+  database: Database.Database,
+  table: "er_users" | "er_games",
+  definitions: Readonly<Record<string, string>>,
+): void {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  const existing = new Set(rows.map(row => row.name));
+  for (const [column, definition] of Object.entries(definitions)) {
+    if (existing.has(column)) continue;
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 function requireUser(database: Database.Database, userId: string): void {

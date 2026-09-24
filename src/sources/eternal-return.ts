@@ -170,6 +170,7 @@ export interface EternalReturnGame {
   gimmickEvidenceLockerItem?: EternalReturnJsonValue;
   itemTransferredConsole?: number[];
   itemTransferredDrone?: number[];
+  receiptDetails?: EternalReturnJsonValue;
   extra?: Record<string, EternalReturnJsonValue>;
   normalizationWarnings?: string[];
 }

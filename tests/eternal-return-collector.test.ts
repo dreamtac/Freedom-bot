@@ -19,10 +19,11 @@ afterEach(async () => {
 describe("EternalReturnCollector latest refresh", () => {
   it.each([
     { added: 0, pages: [[100, 99]], calls: 1 },
+    { added: 1, pages: [[101, 100]], calls: 1 },
     { added: 9, pages: [[109, 108, 107, 106, 105, 104, 103, 102, 101, 100]], calls: 1 },
     { added: 10, pages: [range(110, 101), [100]], calls: 2 },
     { added: 11, pages: [range(111, 102), [101, 100]], calls: 2 },
-  ])("새 경기 $added개를 기존 완료 경계까지 수집한다", async ({ pages, calls }) => {
+  ])("새 경기 $added개를 기존 완료 경계까지 수집한다", async ({ added, pages, calls }) => {
     const { store } = await createStore();
     seedBoundary(store, 100);
     const loadPage = pagesLoader(pages);
@@ -31,6 +32,8 @@ describe("EternalReturnCollector latest refresh", () => {
     const result = await collector.refreshUser("uid");
 
     expect(loadPage).toHaveBeenCalledTimes(calls);
+    expect(result.newGameIds).toHaveLength(added);
+    expect(result.newGameIds).toEqual(pages.flat().filter(gameId => gameId > 100));
     expect(result.reachedBoundary).toBe(true);
     expect(store.getCollectionState("uid", "latest")?.boundaryGameId).toBe(pages[0]?.[0]);
     expect(store.getCollectionState("uid", "latest")?.status).toBe("succeeded");
@@ -48,6 +51,7 @@ describe("EternalReturnCollector latest refresh", () => {
     expect(resolveUserId).toHaveBeenCalledWith("홉빵맨", "key", { priority: "interactive" });
     expect(result.games).toHaveLength(10);
     expect(result.next).toBe("10");
+    expect(result.newGameIds).toEqual([]);
     expect(store.getUser("new-uid")?.nickname).toBe("홉빵맨");
     expect(store.getUser("new-uid")?.autoRefresh).toBe(false);
     expect(store.getCollectionState("new-uid", "latest")?.boundaryGameId).toBe(20);
@@ -63,6 +67,7 @@ describe("EternalReturnCollector latest refresh", () => {
     });
     const result = await collector.refreshUser("uid");
     expect(result.storedGames).toBe(0);
+    expect(result.newGameIds).toEqual([]);
     expect(store.getCollectionState("uid", "latest")?.lastSuccessAt).toBeInstanceOf(Date);
     store.close();
   });
@@ -104,8 +109,9 @@ describe("EternalReturnCollector latest refresh", () => {
   });
 
   it("중간 실패 시 저장한 페이지는 유지하고 완료 경계는 옮기지 않은 뒤 재개한다", async () => {
-    const { store } = await createStore();
+    const { store, path } = await createStore();
     seedBoundary(store, 100);
+    store.setReceiptSettings("uid", true, "channel");
     const failedLoader = vi.fn()
       .mockResolvedValueOnce(response(range(110, 101), "100"))
       .mockRejectedValueOnce(new Error("temporary"));
@@ -116,15 +122,21 @@ describe("EternalReturnCollector latest refresh", () => {
     expect(store.getCollectionState("uid", "latest")).toMatchObject({
       status: "failed", boundaryGameId: 100, lastError: "temporary",
     });
+    store.close();
+
+    const reopened = await EternalReturnStore.open(path);
+    expect(reopened.listUnqueuedReceiptGames("uid", "channel").map(game => game.gameId))
+      .toEqual(range(110, 101).reverse());
 
     const resumedLoader = pagesLoader([range(110, 101), [100, 99]]);
-    const resumed = new EternalReturnCollector({ apiKey: "key", store, loadPage: resumedLoader });
-    await resumed.refreshUser("uid");
-    expect(store.countGames("uid")).toBe(12);
-    expect(store.getCollectionState("uid", "latest")).toMatchObject({
+    const resumed = new EternalReturnCollector({ apiKey: "key", store: reopened, loadPage: resumedLoader });
+    const result = await resumed.refreshUser("uid");
+    expect(result.newGameIds).toEqual(range(110, 101));
+    expect(reopened.countGames("uid")).toBe(12);
+    expect(reopened.getCollectionState("uid", "latest")).toMatchObject({
       status: "succeeded", boundaryGameId: 110,
     });
-    store.close();
+    reopened.close();
   });
 
   it("반복된 next를 실패로 기록하고 완료 경계를 유지한다", async () => {
@@ -157,6 +169,7 @@ describe("EternalReturnCollector backfill", () => {
 
     expect(loadPage).toHaveBeenCalledTimes(2);
     expect(result.games).toHaveLength(4);
+    expect(result.newGameIds).toEqual([]);
     expect(result.next).toBe("13");
     expect(store.getCollectionState("uid", "backfill")).toMatchObject({ status: "succeeded", cursor: "13" });
     store.close();
@@ -197,10 +210,11 @@ describe("EternalReturnCollector backfill", () => {
   });
 });
 
-async function createStore(): Promise<{ store: EternalReturnStore }> {
+async function createStore(): Promise<{ store: EternalReturnStore; path: string }> {
   const directory = await mkdtemp(join(tmpdir(), "freedom-bot-er-collector-"));
   temporaryDirectories.push(directory);
-  return { store: await EternalReturnStore.open(join(directory, "test.sqlite")) };
+  const path = join(directory, "test.sqlite");
+  return { store: await EternalReturnStore.open(path), path };
 }
 
 function seedBoundary(store: EternalReturnStore, gameId: number): void {
