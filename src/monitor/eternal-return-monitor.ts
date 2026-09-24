@@ -22,6 +22,9 @@ interface EternalReturnMonitorOptions {
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
   logger?: Pick<Console, "log" | "error">;
+  receiptsEnabled?: boolean;
+  defaultReceiptChannelId?: string;
+  dispatchReceipts?: () => Promise<unknown>;
 }
 
 export class EternalReturnMonitor {
@@ -31,6 +34,9 @@ export class EternalReturnMonitor {
   readonly #setTimer: typeof setTimeout;
   readonly #clearTimer: typeof clearTimeout;
   readonly #logger: Pick<Console, "log" | "error">;
+  readonly #receiptsEnabled: boolean;
+  readonly #defaultReceiptChannelId: string | undefined;
+  readonly #dispatchReceipts: (() => Promise<unknown>) | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #active: Promise<EternalReturnMonitorResult> | undefined;
   #stopped = true;
@@ -42,6 +48,9 @@ export class EternalReturnMonitor {
     this.#setTimer = options.setTimer ?? setTimeout;
     this.#clearTimer = options.clearTimer ?? clearTimeout;
     this.#logger = options.logger ?? console;
+    this.#receiptsEnabled = options.receiptsEnabled ?? true;
+    this.#defaultReceiptChannelId = options.defaultReceiptChannelId;
+    this.#dispatchReceipts = options.dispatchReceipts;
   }
 
   async start(): Promise<void> {
@@ -123,24 +132,27 @@ export class EternalReturnMonitor {
       }
     }
     const queuedReceipts = this.#queueDetectedGames();
+    if (this.#receiptsEnabled && this.#dispatchReceipts) await this.#dispatchReceipts();
     return { users: usersByNickname.size, succeeded, failed, storedGames, queuedReceipts };
   }
 
   #queueDetectedGames(): number {
+    if (!this.#receiptsEnabled) return 0;
     const grouped = new Map<string, {
       input: EternalReturnGameReceiptInput;
       players: Map<string, EternalReturnReceiptPlayerInput>;
     }>();
     for (const user of this.#store.listReceiptEnabledUsers()) {
-      if (!user.receiptChannelId) continue;
-      for (const game of this.#store.listUnqueuedReceiptGames(user.userId, user.receiptChannelId)) {
-        const key = `${user.receiptChannelId}\0${game.gameId}`;
+      const channelId = user.receiptChannelId ?? this.#defaultReceiptChannelId;
+      if (!channelId) continue;
+      for (const game of this.#store.listUnqueuedReceiptGames(user.userId, channelId)) {
+        const key = `${channelId}\0${game.gameId}`;
         let group = grouped.get(key);
         if (!group) {
           const players = new Map<string, EternalReturnReceiptPlayerInput>();
           group = {
             input: {
-              channelId: user.receiptChannelId,
+              channelId,
               gameId: game.gameId,
               detectedAt: game.collectedAt,
               players: [],

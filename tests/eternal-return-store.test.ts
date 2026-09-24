@@ -288,6 +288,27 @@ describe("EternalReturnStore", () => {
     restarted.close();
   });
 
+  it("게임 결과 상세 스냅샷을 저장하고 경기 갱신 뒤에도 보존하며 실패는 세 번까지만 재시도한다", async () => {
+    const { store } = await createStore();
+    store.upsertUser("uid", "홉빵맨");
+    store.saveGamePage("uid", [game({ gameId: 901, damageToPlayer: 100 })]);
+    const receipt = store.enqueueGameReceipt({
+      channelId: "channel", gameId: 901,
+      players: [{ userId: "uid", nickname: "홉빵맨", isMonitored: true }],
+    });
+    store.putGameReceiptDetails(receipt.receiptId, { title: "저장된 게임 결과", damage: 100 });
+    store.saveGamePage("uid", [game({ gameId: 901, damageToPlayer: 200 })]);
+    expect(store.getGameReceiptDetails(receipt.receiptId)).toEqual({ title: "저장된 게임 결과", damage: 100 });
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      expect(store.claimNextPendingGameReceipt()).toMatchObject({ attemptCount: attempt });
+      store.markGameReceiptFailed(receipt.receiptId, "failed");
+      expect(store.retryFailedGameReceipts(undefined, new Date(), 3)).toBe(attempt < 3 ? 1 : 0);
+    }
+    expect(store.claimNextPendingGameReceipt()).toBeUndefined();
+    store.close();
+  });
+
   it("기존 수집 경기를 suppressed 기준선으로 묶어 첫 실행 알림을 막는다", async () => {
     const { store } = await createStore();
     store.upsertUser("uid-a", "홉빵맨");

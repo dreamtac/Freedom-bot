@@ -1,4 +1,10 @@
-import { EmbedBuilder } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
+} from "discord.js";
 
 import { MATCHING_MODE, TEAM_MODE } from "../sources/eternal-return.js";
 import type {
@@ -8,6 +14,44 @@ import type {
 } from "../services/eternal-return-receipt.js";
 
 export type EternalReturnReceiptSection = "combat" | "contribution" | "credits" | "activity" | "build";
+
+export function buildReceiptComponents(
+  view: EternalReturnReceiptView,
+  receiptId: string,
+  selectedPlayerIndex = 0,
+): Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> {
+  const rows: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [];
+  if (view.players.length > 1) {
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(receiptCustomId(receiptId, "player"))
+      .setPlaceholder("상세 전적을 볼 유저 선택")
+      .addOptions(view.players.slice(0, 25).map((player, index) => ({
+        label: `${player.nickname} · ${player.characterName}`.slice(0, 100),
+        value: String(index),
+        default: index === selectedPlayerIndex,
+      })));
+    rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  }
+  const sections: ReadonlyArray<[EternalReturnReceiptSection, string, string]> = [
+    ["combat", "전투", "⚔️"],
+    ["contribution", "팀 기여", "❤️"],
+    ["credits", "크레딧", "💰"],
+    ["activity", "행동", "👁️"],
+    ["build", "빌드", "🛠️"],
+  ];
+  rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+    sections.map(([section, label, emoji]) => new ButtonBuilder()
+      .setCustomId(receiptCustomId(receiptId, section))
+      .setLabel(label)
+      .setEmoji(emoji)
+      .setStyle(ButtonStyle.Secondary)),
+  ));
+  return rows;
+}
+
+function receiptCustomId(receiptId: string, action: EternalReturnReceiptSection | "player"): string {
+  return `er:r:${receiptId}:${action}`;
+}
 
 export function buildReceiptSummaryEmbed(view: EternalReturnReceiptView): EmbedBuilder {
   if (!view.valid) throw new Error(`게임 결과 정합성 검증 실패: ${view.errors.join("; ")}`);

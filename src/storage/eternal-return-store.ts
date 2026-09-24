@@ -679,6 +679,26 @@ export class EternalReturnStore {
     return claim();
   }
 
+  claimNextPendingGameReceipt(now = new Date()): EternalReturnGameReceipt | undefined {
+    const timestamp = now.getTime();
+    const claim = this.#database.transaction(() => {
+      const candidate = this.#database.prepare(`
+        SELECT receipt_id FROM er_game_receipts
+        WHERE status = 'pending'
+        ORDER BY detected_at ASC, receipt_id ASC LIMIT 1
+      `).get() as { receipt_id: string } | undefined;
+      if (!candidate) return undefined;
+      const result = this.#database.prepare(`
+        UPDATE er_game_receipts SET
+          status = 'sending', attempt_count = attempt_count + 1,
+          last_attempt_at = ?, last_error = NULL, updated_at = ?
+        WHERE receipt_id = ? AND status = 'pending'
+      `).run(timestamp, timestamp, candidate.receipt_id);
+      return result.changes === 1 ? this.getGameReceipt(candidate.receipt_id) : undefined;
+    });
+    return claim();
+  }
+
   markGameReceiptSent(receiptId: string, messageId: string, sentAt = new Date()): EternalReturnGameReceipt {
     const trimmedMessageId = messageId.trim();
     if (!trimmedMessageId) throw new Error("디스코드 메시지 ID가 필요합니다.");
@@ -702,18 +722,41 @@ export class EternalReturnStore {
     return this.getGameReceipt(receiptId)!;
   }
 
-  retryFailedGameReceipts(channelId?: string, now = new Date()): number {
+  retryFailedGameReceipts(channelId?: string, now = new Date(), maxAttempts = 3): number {
     const timestamp = now.getTime();
     const result = channelId === undefined
       ? this.#database.prepare(`
           UPDATE er_game_receipts SET status = 'pending', last_error = NULL, updated_at = ?
-          WHERE status = 'failed'
-        `).run(timestamp)
+          WHERE status = 'failed' AND attempt_count < ?
+        `).run(timestamp, maxAttempts)
       : this.#database.prepare(`
           UPDATE er_game_receipts SET status = 'pending', last_error = NULL, updated_at = ?
-          WHERE status = 'failed' AND channel_id = ?
-        `).run(timestamp, normalizeChannelId(channelId));
+          WHERE status = 'failed' AND channel_id = ? AND attempt_count < ?
+        `).run(timestamp, normalizeChannelId(channelId), maxAttempts);
     return result.changes;
+  }
+
+  putGameReceiptDetails(receiptId: string, details: unknown): void {
+    const payload = stringifyJson(details);
+    const result = this.#database.prepare(`
+      UPDATE er_games SET receipt_details_json = ?, updated_at = updated_at
+      WHERE EXISTS (
+        SELECT 1 FROM er_game_receipt_players p
+        WHERE p.receipt_id = ? AND p.user_id = er_games.user_id AND p.game_id = er_games.game_id
+      )
+    `).run(payload, receiptId);
+    if (result.changes === 0) throw new Error(`게임 결과 상세를 저장할 경기 기록이 없습니다: ${receiptId}`);
+  }
+
+  getGameReceiptDetails<T = unknown>(receiptId: string): T | undefined {
+    const row = this.#database.prepare(`
+      SELECT g.receipt_details_json details
+      FROM er_game_receipt_players p
+      JOIN er_games g ON g.user_id = p.user_id AND g.game_id = p.game_id
+      WHERE p.receipt_id = ? AND g.receipt_details_json IS NOT NULL
+      ORDER BY p.created_at ASC LIMIT 1
+    `).get(receiptId) as { details: string } | undefined;
+    return row ? parseJson(row.details) as T : undefined;
   }
 
   recoverInterruptedGameReceipts(now = new Date()): number {
@@ -1125,7 +1168,9 @@ function gameUpsertSql(): string {
   const columns = ["user_id", "game_id", ...Object.keys(NUMBER_FIELDS), "game_version", "start_dtm", "started_at",
     ...Object.keys(JSON_FIELDS), "collected_at", "updated_at"];
   const updates = columns.filter(column => !["user_id", "game_id", "collected_at"].includes(column))
-    .map(column => `${column} = excluded.${column}`).join(",\n        ");
+    .map(column => column === "receipt_details_json"
+      ? `${column} = COALESCE(excluded.${column}, er_games.${column})`
+      : `${column} = excluded.${column}`).join(",\n        ");
   return `INSERT INTO er_games (${columns.join(", ")}) VALUES (${columns.map(column => `@${column}`).join(", ")})
     ON CONFLICT(user_id, game_id) DO UPDATE SET ${updates}`;
 }

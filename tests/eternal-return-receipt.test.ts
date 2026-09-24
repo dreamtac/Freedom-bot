@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildReceiptComponents,
   buildReceiptDetailEmbed,
   buildReceiptSummaryEmbed,
 } from "../src/commands/eternal-return-receipt-formatters.js";
@@ -103,6 +104,22 @@ describe("Eternal Return receipt view model", () => {
     expect(receipt.valid).toBe(false);
     expect(receipt.errors[0]).toContain("총액");
     expect(() => buildReceiptSummaryEmbed(receipt)).toThrow("정합성");
+  });
+
+  it("공개 결과에는 짧은 receiptId 기반 상세 버튼과 팀 유저 선택 메뉴만 넣는다", () => {
+    const first = buildReceiptPlayerView({
+      userId: "secret-user-a", nickname: "홉빵맨", game: storedGame({ teamNumber: 1 }),
+    }, references);
+    const second = buildReceiptPlayerView({
+      userId: "secret-user-b", nickname: "홍어심슨", game: storedGame({ userId: "secret-user-b", teamNumber: 1 }),
+    }, references);
+    const rows = buildReceiptComponents(buildReceiptView([first, second]), "shortReceiptId");
+    const json = rows.map(row => row.toJSON());
+    expect(json).toHaveLength(2);
+    expect(JSON.stringify(json)).toContain("er:r:shortReceiptId:combat");
+    expect(JSON.stringify(json)).toContain("er:r:shortReceiptId:player");
+    expect(JSON.stringify(json)).not.toContain("secret-user");
+    expect(JSON.stringify(json)).not.toContain("api");
   });
 
   it("전투·팀 기여·행동에서 0을 숨기고 의미가 확정된 필드만 사용한다", () => {

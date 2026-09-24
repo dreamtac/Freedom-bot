@@ -1,7 +1,11 @@
 import { MessageFlags, type Interaction } from "discord.js";
 
 import type { BotCommand, BotCommandContext } from "./commands/types.js";
-import { isEternalReturnCommand, isEternalReturnComponent } from "./features/eternal-return-policy.js";
+import {
+  isEternalReturnCommand,
+  isEternalReturnComponent,
+  isEternalReturnReceiptComponent,
+} from "./features/eternal-return-policy.js";
 
 // Discord errors can contain request tokens; log only diagnostic fields.
 export function errorDetails(error: unknown): object {
@@ -36,9 +40,18 @@ export async function handleInteraction(
       return;
     }
     if (interaction.isMessageComponent() && isEternalReturnComponent(interaction.customId)) {
-      const { handleEternalReturnComponent } = await import("./commands/eternal-return.js");
       if (interaction.isButton() || interaction.isStringSelectMenu()) {
-        await handleEternalReturnComponent(interaction, context);
+        if (isEternalReturnReceiptComponent(interaction.customId)) {
+          if (context.erReceiptsEnabled !== true) {
+            await interaction.reply({ content: "현재 게임 결과 알림 상세 보기는 비활성화되어 있습니다.", flags: MessageFlags.Ephemeral });
+          } else {
+            const { handleEternalReturnReceiptComponent } = await import("./commands/eternal-return-receipt-ui.js");
+            await handleEternalReturnReceiptComponent(interaction, context);
+          }
+        } else {
+          const { handleEternalReturnComponent } = await import("./commands/eternal-return.js");
+          await handleEternalReturnComponent(interaction, context);
+        }
       }
       return;
     }

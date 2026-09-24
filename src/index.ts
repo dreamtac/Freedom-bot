@@ -37,13 +37,6 @@ async function startBot(): Promise<void> {
         store: eternalReturnStore,
       })
     : undefined;
-  const eternalReturnMonitor = eternalReturnStore && eternalReturnCollector
-    ? new (await import("./monitor/eternal-return-monitor.js")).EternalReturnMonitor({
-        store: eternalReturnStore,
-        collector: eternalReturnCollector,
-        intervalMs: config.erRefreshIntervalMs,
-      })
-    : undefined;
   const eternalReturnProfileService = eternalReturnStore && config.erApiKey
     ? new (await import("./services/eternal-return-profile.js")).EternalReturnProfileService({
         apiKey: config.erApiKey,
@@ -55,6 +48,35 @@ async function startBot(): Promise<void> {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
+  const eternalReturnReceiptMonitor = config.erReceiptsEnabled && config.erReceiptChannelId
+    && eternalReturnStore && config.erApiKey
+    ? new (await import("./monitor/eternal-return-receipt-monitor.js")).EternalReturnReceiptMonitor({
+        client,
+        store: eternalReturnStore,
+        builder: new (await import("./services/eternal-return-receipt.js")).EternalReturnReceiptBuilder({
+          store: eternalReturnStore,
+          routes: new (await import("./services/eternal-return-route.js")).EternalReturnRouteService({
+            apiKey: config.erApiKey,
+            store: eternalReturnStore,
+          }),
+        }),
+        loadReferences: async () => (await import("./sources/eternal-return-reference.js"))
+          .getReferenceData(config.erApiKey!, { priority: "refresh" }, eternalReturnStore),
+        maxPerCycle: config.erReceiptMaxPerCycle,
+      })
+    : undefined;
+  const eternalReturnMonitor = eternalReturnStore && eternalReturnCollector
+    ? new (await import("./monitor/eternal-return-monitor.js")).EternalReturnMonitor({
+        store: eternalReturnStore,
+        collector: eternalReturnCollector,
+        intervalMs: config.erRefreshIntervalMs,
+        receiptsEnabled: config.erReceiptsEnabled,
+        ...(config.erReceiptChannelId ? { defaultReceiptChannelId: config.erReceiptChannelId } : {}),
+        ...(eternalReturnReceiptMonitor
+          ? { dispatchReceipts: () => eternalReturnReceiptMonitor.checkNow() }
+          : {}),
+      })
+    : undefined;
   registerDiscordDiagnostics(client);
   const newsMonitor = config.notificationChannelId
     ? new NewsMonitor({
@@ -129,8 +151,11 @@ async function startBot(): Promise<void> {
     marketCloseReportMonitor?.start();
     stockMasterMonitor.start();
     if (eternalReturnMonitor) {
-      void eternalReturnMonitor.start().catch((error: unknown) => {
-        console.error("이터널 리턴 자동 갱신 모니터를 시작하지 못했습니다.", error);
+      void (async () => {
+        await eternalReturnReceiptMonitor?.start();
+        await eternalReturnMonitor.start();
+      })().catch((error: unknown) => {
+        console.error("이터널 리턴 자동 갱신 또는 게임 결과 모니터를 시작하지 못했습니다.", error);
       });
     }
   });
@@ -138,6 +163,7 @@ async function startBot(): Promise<void> {
   client.on(Events.InteractionCreate, async (interaction) => {
     await handleInteraction(interaction, commandsByName, {
       erEnabled: config.erEnabled,
+      erReceiptsEnabled: config.erReceiptsEnabled,
       ...(config.erApiKey ? { erApiKey: config.erApiKey } : {}),
       ...(eternalReturnStore ? { eternalReturnStore } : {}),
       ...(eternalReturnCollector ? { eternalReturnCollector } : {}),

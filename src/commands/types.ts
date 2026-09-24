@@ -39,6 +39,7 @@ export interface BotCommand {
 export interface BotCommandContext {
   kis?: KisConfig;
   erEnabled?: boolean;
+  erReceiptsEnabled?: boolean;
   erApiKey?: string;
   eternalReturnStore?: EternalReturnStore;
   eternalReturnCollector?: EternalReturnCollector;

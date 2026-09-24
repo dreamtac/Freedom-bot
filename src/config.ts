@@ -28,6 +28,14 @@ const configSchema = z.object({
     (value) => (value === "" || value === undefined ? 300_000 : value),
     z.coerce.number().int().min(60_000).max(86_400_000),
   ),
+  ER_RECEIPT_CHANNEL_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    snowflakeSchema.optional(),
+  ),
+  ER_RECEIPT_MAX_PER_CYCLE: z.preprocess(
+    (value) => (value === "" || value === undefined ? 3 : value),
+    z.coerce.number().int().min(1).max(10),
+  ),
   KIS_APP_KEY: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional(),
@@ -69,7 +77,10 @@ export interface AppConfig {
   erRefreshIntervalMs: number;
   kis?: KisConfig;
   erEnabled: boolean;
+  erReceiptsEnabled: boolean;
   erApiKey?: string;
+  erReceiptChannelId?: string;
+  erReceiptMaxPerCycle: number;
 }
 
 export function loadConfig(
@@ -91,9 +102,17 @@ export function loadConfig(
     );
   }
 
+  const eternalReturn = readEternalReturnConfig(environment);
+  if (eternalReturn.erReceiptsEnabled && !result.data.ER_RECEIPT_CHANNEL_ID) {
+    throw new Error("환경변수 설정을 확인해 주세요:\nER_RECEIPTS_ENABLED=true이면 ER_RECEIPT_CHANNEL_ID가 필요합니다.");
+  }
+  if (eternalReturn.erReceiptsEnabled && !eternalReturn.erApiKey) {
+    throw new Error("환경변수 설정을 확인해 주세요:\n게임 결과 알림에는 ER_API_KEY가 필요합니다.");
+  }
+
   return {
     botToken: result.data.DISCORD_BOT_TOKEN,
-    ...readEternalReturnConfig(environment),
+    ...eternalReturn,
     clientId: result.data.DISCORD_CLIENT_ID,
     ...(result.data.DISCORD_GUILD_ID
       ? { guildId: result.data.DISCORD_GUILD_ID }
@@ -104,6 +123,10 @@ export function loadConfig(
     newsPollIntervalMs: result.data.NEWS_POLL_INTERVAL_MS,
     stockMasterRefreshIntervalMs: result.data.STOCK_MASTER_REFRESH_INTERVAL_MS,
     erRefreshIntervalMs: result.data.ER_REFRESH_INTERVAL_MS,
+    erReceiptMaxPerCycle: result.data.ER_RECEIPT_MAX_PER_CYCLE,
+    ...(result.data.ER_RECEIPT_CHANNEL_ID
+      ? { erReceiptChannelId: result.data.ER_RECEIPT_CHANNEL_ID }
+      : {}),
     ...(result.data.KIS_APP_KEY && result.data.KIS_APP_SECRET
       ? {
           kis: {

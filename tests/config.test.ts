@@ -13,11 +13,13 @@ describe("loadConfig", () => {
     ).toEqual({
       botToken: "test-token",
       erEnabled: false,
+      erReceiptsEnabled: false,
       clientId: "12345678901234567",
       guildId: "23456789012345678",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
       erRefreshIntervalMs: 300_000,
+      erReceiptMaxPerCycle: 3,
     });
   });
 
@@ -31,10 +33,12 @@ describe("loadConfig", () => {
     ).toEqual({
       botToken: "test-token",
       erEnabled: false,
+      erReceiptsEnabled: false,
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
       erRefreshIntervalMs: 300_000,
+      erReceiptMaxPerCycle: 3,
     });
   });
 
@@ -49,10 +53,12 @@ describe("loadConfig", () => {
     ).toEqual({
       botToken: "test-token",
       erEnabled: false,
+      erReceiptsEnabled: false,
       clientId: "12345678901234567",
       newsPollIntervalMs: 300_000,
       stockMasterRefreshIntervalMs: 86_400_000,
       erRefreshIntervalMs: 300_000,
+      erReceiptMaxPerCycle: 3,
       kis: {
         appKey: "app-key",
         appSecret: "app-secret",
@@ -95,7 +101,32 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...required, ER_REFRESH_INTERVAL_MS: "1000" })).toThrow("환경변수 설정");
   });
 
+  it("게임 결과 알림은 기능, API 키, 채널을 함께 요구한다", () => {
+    expect(loadConfig({
+      ...required,
+      ER_ENABLED: "true",
+      ER_API_KEY: "key",
+      ER_RECEIPTS_ENABLED: "true",
+      ER_RECEIPT_CHANNEL_ID: "23456789012345678",
+      ER_RECEIPT_MAX_PER_CYCLE: "5",
+    })).toMatchObject({
+      erReceiptsEnabled: true,
+      erReceiptChannelId: "23456789012345678",
+      erReceiptMaxPerCycle: 5,
+    });
+    expect(() => loadConfig({
+      ...required, ER_ENABLED: "true", ER_API_KEY: "key", ER_RECEIPTS_ENABLED: "true",
+    })).toThrow("ER_RECEIPT_CHANNEL_ID");
+    expect(() => loadConfig({
+      ...required, ER_ENABLED: "true", ER_RECEIPTS_ENABLED: "true", ER_RECEIPT_CHANNEL_ID: "23456789012345678",
+    })).toThrow("ER_API_KEY");
+  });
+
   it.each(["0", "1", "yes", "FALSE", "typo"])("잘못된 기능 설정 %s를 거부한다", flag => {
     expect(() => loadConfig({ ...required, ER_ENABLED: flag })).toThrow("ER_ENABLED");
+  });
+
+  it.each(["1", "yes", "TRUE"])("잘못된 게임 결과 기능 설정 %s를 거부한다", flag => {
+    expect(() => loadConfig({ ...required, ER_RECEIPTS_ENABLED: flag })).toThrow("ER_RECEIPTS_ENABLED");
   });
 });
