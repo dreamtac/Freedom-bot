@@ -37,6 +37,11 @@ export async function manageEternalReturnUsers(
         target, config.erApiKey, { priority: "interactive" },
       );
       store.upsertUser(userId, target);
+      for (const previous of store.findUsersByNickname(target)) {
+        if (previous.userId !== userId && previous.autoRefresh) {
+          store.setAutoRefresh(previous.userId, false);
+        }
+      }
       store.setAutoRefresh(userId, true);
       return `${target} (${userId})을 자동 수집 대상으로 등록했습니다.`;
     }
@@ -45,10 +50,12 @@ export async function manageEternalReturnUsers(
       const direct = store.getUser(target);
       const matches = direct ? [direct] : store.findUsersByNickname(target);
       if (matches.length === 0) throw new Error(`저장된 사용자를 찾지 못했습니다: ${target}`);
-      if (matches.length > 1) {
+      const activeMatches = matches.filter(user => user.autoRefresh);
+      const selected = direct ?? (activeMatches.length === 1 ? activeMatches[0] : undefined);
+      if (!selected && matches.length > 1) {
         throw new Error(`같은 닉네임의 UID가 여러 개입니다. UID로 다시 지정해 주세요: ${matches.map(user => user.userId).join(", ")}`);
       }
-      const user = matches[0]!;
+      const user = selected ?? matches[0]!;
       store.setAutoRefresh(user.userId, false);
       return `${user.nickname} (${user.userId})의 자동 수집을 비활성화했습니다.`;
     }

@@ -53,6 +53,21 @@ describe("handleInteraction", () => {
     expect(target.reply).not.toHaveBeenCalled();
   });
 
+  it("활성 전적 버튼은 컴포넌트 처리기로 전달하고 만료 안내를 반환한다", async () => {
+    const target = {
+      ...request(),
+      isChatInputCommand: () => false,
+      isMessageComponent: () => true,
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      customId: "er:missing-session:next",
+      user: { id: "owner" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleInteraction(target as unknown as Interaction, new Map(), { erEnabled: true });
+    expect(target.reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("만료") }));
+  });
+
   it("실행 코드에서 빠진 명령어에도 응답하고 경고를 남긴다", async () => {
     const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const target = request();

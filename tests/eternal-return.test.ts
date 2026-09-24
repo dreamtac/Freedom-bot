@@ -6,7 +6,7 @@ import {
   getUserStatsByUserId,
 } from "../src/sources/eternal-return.js";
 import { getReferenceData as loadReferenceData, createEmptyReferenceData } from "../src/sources/eternal-return-reference.js";
-import { buildRecentGamesEmbed, buildRankEmbed, buildFreeCharactersEmbed } from "../src/commands/eternal-return-formatters.js";
+import { buildRecentGamesEmbed, buildGameDetailEmbed, buildRankEmbed, buildFreeCharactersEmbed } from "../src/commands/eternal-return-formatters.js";
 import {
   EternalReturnRequestQueue,
   replaceEternalReturnRequestQueueForTesting,
@@ -186,19 +186,35 @@ test("v2 reference tables and downloaded Korean names render in match summaries"
   assert.deepEqual(tables, ["hash", "Character", "Area", "Trait", "ItemWeapon", "ItemArmor", "Season"]);
   const embed = buildRecentGamesEmbed(nickname, [game], references).toJSON();
   assert.match(embed.fields[0].name, /#2.*재키/);
-  assert.match(embed.fields[0].value, /피해 12,345/);
-  assert.match(embed.fields[0].value, /K\/A\/D 3\/4\/0/);
-  assert.match(embed.fields[0].value, /시험 무기/);
-  assert.match(embed.fields[0].value, /시험 특성/);
-  assert.match(embed.fields[0].value, /항구/);
+  assert.match(embed.fields[0].value, /가한 12,345/);
+  assert.match(embed.fields[0].value, /K\/D\/A 3\/0\/4/);
+  const detail = buildGameDetailEmbed(nickname, game, references).toJSON();
+  assert.match(detail.fields.find(field => field.name === "장비").value, /시험 무기/);
+  assert.match(detail.fields.find(field => field.name === "특성").value, /시험 특성/);
+  assert.match(detail.fields.find(field => field.name === "동선").value, /항구/);
 });
 
 test("empty and partial match data render without crashing; results are capped at five", () => {
   const references = createEmptyReferenceData();
-  assert.match(buildRecentGamesEmbed(nickname, [], references).toJSON().description, /찾지 못했습니다/);
+  assert.match(buildRecentGamesEmbed(nickname, [], references).toJSON().description, /표시할 경기/);
   const embed = buildRecentGamesEmbed(nickname, Array.from({ length: 8 }, () => ({})), references).toJSON();
   assert.equal(embed.fields.length, 5);
-  assert.match(embed.fields[0].value, /피해 -/);
+  assert.match(embed.fields[0].value, /가한 -/);
+});
+
+test("긴 이름과 많은 특성도 Discord embed 필드 제한 안으로 자른다", () => {
+  const long = "가".repeat(2_000);
+  const references = {
+    ...createEmptyReferenceData(), characterName: () => long, itemName: () => long,
+    traitName: () => long, areaName: () => long,
+  };
+  const detailed = buildGameDetailEmbed(nickname, {
+    ...game, traitFirstSub: Array.from({ length: 20 }, (_, index) => index + 1),
+  }, references).toJSON();
+  assert.ok(detailed.description.length <= 4_096);
+  assert.ok(detailed.fields.every(field => field.value.length <= 1_024));
+  const recent = buildRecentGamesEmbed(nickname, [game], references).toJSON();
+  assert.ok(recent.fields[0].name.length <= 256);
 });
 
 test("rank and free-character embeds support empty results", () => {

@@ -3,6 +3,7 @@ import {
   getEternalReturnRequestQueue,
   type EternalReturnRequestPriority,
 } from "./eternal-return-request-queue.js";
+import { normalizeEternalReturnGame, type EternalReturnJsonValue } from "../services/eternal-return-game-normalizer.js";
 
 const API_BASE = "https://open-api.bser.io";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -68,6 +69,109 @@ export interface EternalReturnGame {
   premadeMatchingType?: number;
   botAdded?: number;
   bestWeapon?: number;
+  bestWeaponLevel?: number;
+  mmrAvg?: number;
+  skinCode?: number;
+  nickname?: string;
+  damageToPlayer_basic?: number;
+  damageToPlayer_skill?: number;
+  damageToPlayer_itemSkill?: number;
+  damageToPlayer_direct?: number;
+  damageToPlayer_uniqueSkill?: number;
+  damageToPlayer_trap?: number;
+  damageToPlayer_Shield?: number;
+  damageOffsetedByShield_Player?: number;
+  damageOffsetedByShield_Monster?: number;
+  addTelephotoCamera?: number;
+  removeTelephotoCamera?: number;
+  useReconDrone?: number;
+  useEmpDrone?: number;
+  useHyperLoop?: number;
+  useSecurityConsole?: number;
+  totalDoubleKill?: number;
+  totalTripleKill?: number;
+  totalQuadraKill?: number;
+  totalExtraKill?: number;
+  clutchCount?: number;
+  terminateCount?: number;
+  teamElimination?: number;
+  teamDown?: number;
+  totalGainVFCredit?: number;
+  totalUseVFCredit?: number;
+  totalVFCredits?: number[];
+  usedVFCredits?: number[];
+  creditSource?: Record<string, EternalReturnJsonValue>;
+  crGetAnimal?: number;
+  crGetMutant?: number;
+  crGetPhaseStart?: number;
+  crGetKill?: number;
+  crGetAssist?: number;
+  crGetTimeElapsed?: number;
+  crGetCreditBonus?: number;
+  crGetByGuideRobot?: number;
+  killAlphaGainVFCredit?: number;
+  killOmegaGainVFCredit?: number;
+  killGammaGainVFCredit?: number;
+  killWicklineGainVFCredit?: number;
+  killItemBountyGainVFCredit?: number;
+  killDroneGainVFCredit?: number;
+  killTurretGainVFCredit?: number;
+  itemShredderGainVFCredit?: number;
+  kioskExchangeCredit?: number;
+  remoteDroneUseVFCreditMySelf?: number;
+  remoteDroneUseVFCreditAlly?: number;
+  transferConsoleFromMaterialUseVFCredit?: number;
+  transferConsoleFromEscapeKeyUseVFCredit?: number;
+  transferConsoleFromRevivalUseVFCredit?: number;
+  creditRevivalCount?: number;
+  creditRevivedOthersCount?: number;
+  tacticalSkillUpgradeUseVFCredit?: number;
+  crUseRemoteDrone?: number;
+  crUseUpgradeTacticalSkill?: number;
+  crUseTreeOfLife?: number;
+  crUseMeteorite?: number;
+  crUseMythril?: number;
+  crUseForceCore?: number;
+  crUseVFBloodSample?: number;
+  crUseActivationModule?: number;
+  crUseRootkit?: number;
+  damageToGuideRobot?: number;
+  useGuideRobot?: number;
+  fishingCount?: number;
+  useEmoticonCount?: number;
+  craftMythic?: number;
+  enterDimensionRift?: number;
+  enterDimensionEmpoweredRift?: number;
+  winFromDimensionRift?: number;
+  winFromDimensionEmpoweredRift?: number;
+  enterTurbulentRift?: number;
+  getBuffCubeRed?: number;
+  getBuffCubePurple?: number;
+  getBuffCubeGreen?: number;
+  getBuffCubeGold?: number;
+  getBuffCubeSkyBlue?: number;
+  sumGetBuffCube?: number;
+  gimmickAppleDropped?: number;
+  gimmickDrumUseCount?: number;
+  gimmickDrumAttackCount?: number;
+  gimmickDrumDroppedHitCount?: number;
+  gimmickHospitalDiscountRate?: number;
+  gimmickGrandfatherClockUseCount?: number;
+  masteryLevel?: EternalReturnJsonValue;
+  skillLevelInfo?: EternalReturnJsonValue;
+  skillOrderInfo?: EternalReturnJsonValue;
+  foodCraftCount?: EternalReturnJsonValue;
+  beverageCraftCount?: EternalReturnJsonValue;
+  airSupplyOpenCount?: EternalReturnJsonValue;
+  getBoriReward?: EternalReturnJsonValue;
+  activeInstallation?: EternalReturnJsonValue;
+  useGadget?: EternalReturnJsonValue;
+  gimmickEvidenceLockerCount?: EternalReturnJsonValue;
+  gimmickEvidenceLockerItem?: EternalReturnJsonValue;
+  itemTransferredConsole?: number[];
+  itemTransferredDrone?: number[];
+  extra?: Record<string, EternalReturnJsonValue>;
+  normalizationWarnings?: string[];
 }
 
 export interface EternalReturnRank {
@@ -265,12 +369,17 @@ export function getUserStatsByUserId(
   );
 }
 
-export function getGameResults(data: EternalReturnResponse): EternalReturnGame[] {
+export function getRawGameResults(data: EternalReturnResponse): EternalReturnGame[] {
   const games = data.userGames ?? data.gameResults ?? data.games ?? [];
   if (!Array.isArray(games) || games.some(game => !game || typeof game !== "object")) {
     throw new EternalReturnApiError("이터널 리턴 경기 목록의 형식을 확인할 수 없습니다.");
   }
   return games;
+}
+
+export function getGameResults(data: EternalReturnResponse): EternalReturnGame[] {
+  const games = getRawGameResults(data);
+  return games.map(game => normalizeEternalReturnGame(game)!).filter(Boolean);
 }
 
 export async function getFreeCharacters(

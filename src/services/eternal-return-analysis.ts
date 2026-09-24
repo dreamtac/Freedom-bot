@@ -27,6 +27,7 @@ export interface EternalReturnPerformanceAnalysis {
   matchingMode: number;
   windowSize: number;
   collectedGames: number;
+  totalStoredGames: number;
   complete: boolean;
   patches: string[];
   overall: AnalysisSegment;
@@ -47,7 +48,7 @@ const METRICS: ReadonlyArray<{
 ];
 
 export function analyzeEternalReturnPerformance(
-  store: Pick<EternalReturnStore, "listGames">,
+  store: Pick<EternalReturnStore, "listGames" | "countGames">,
   userId: string,
   options: { seasonId?: number; matchingMode?: number; windowSize?: number } = {},
 ): EternalReturnPerformanceAnalysis {
@@ -81,6 +82,7 @@ export function analyzeEternalReturnPerformance(
     matchingMode,
     windowSize,
     collectedGames: games.length,
+    totalStoredGames: store.countGames(userId),
     complete: recent.length === windowSize && previous.length === windowSize,
     patches: [...new Set(games.map(game => game.gameVersion).filter((value): value is string => Boolean(value)))],
     overall: segment(recent, previous),

@@ -9,8 +9,9 @@ export interface EternalReturnMonitorResult {
 }
 
 interface EternalReturnMonitorOptions {
-  store: Pick<EternalReturnStore, "listAutoRefreshUsers">;
-  collector: Pick<EternalReturnCollector, "refreshUser">;
+  store: Pick<EternalReturnStore,
+    "listAutoRefreshUsers" | "getUser" | "setAutoRefresh" | "countGames" | "getCollectionState">;
+  collector: Pick<EternalReturnCollector, "refreshNickname" | "backfill">;
   intervalMs: number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
@@ -79,19 +80,45 @@ export class EternalReturnMonitor {
 
   async #checkUsers(): Promise<EternalReturnMonitorResult> {
     const users = this.#store.listAutoRefreshUsers();
+    const usersByNickname = new Map<string, typeof users>();
+    for (const user of users) {
+      const key = normalizeNickname(user.nickname);
+      const group = usersByNickname.get(key) ?? [];
+      group.push(user);
+      usersByNickname.set(key, group);
+    }
     let succeeded = 0;
     let failed = 0;
     let storedGames = 0;
-    for (const user of users) {
+    for (const group of usersByNickname.values()) {
+      const user = group[0]!;
       try {
-        const result = await this.#collector.refreshUser(user.userId, "refresh");
-        succeeded += 1;
+        const result = await this.#collector.refreshNickname(user.nickname, "refresh");
+        if (result.userId !== user.userId || group.length > 1) {
+          this.#store.setAutoRefresh(result.userId, true);
+          for (const previous of group) {
+            if (previous.userId !== result.userId && this.#store.getUser(previous.userId)) {
+              this.#store.setAutoRefresh(previous.userId, false);
+            }
+          }
+          this.#logger.log(`이터널 리턴 자동 갱신 UID 연결 갱신: ${user.nickname}`);
+        }
         storedGames += result.storedGames;
+        const backfill = this.#store.getCollectionState(result.userId, "backfill");
+        if (this.#store.countGames(result.userId) < 100 && backfill?.cursor) {
+          const backfillResult = await this.#collector.backfill(result.userId, { targetGames: 100 });
+          storedGames += backfillResult.storedGames;
+        }
+        succeeded += 1;
       } catch (error: unknown) {
         failed += 1;
         this.#logger.error(`이터널 리턴 자동 갱신 실패: ${user.nickname} (${user.userId})`, error);
       }
     }
-    return { users: users.length, succeeded, failed, storedGames };
+    return { users: usersByNickname.size, succeeded, failed, storedGames };
   }
+}
+
+function normalizeNickname(value: string): string {
+  return value.trim().normalize("NFKC").toLocaleLowerCase("ko-KR");
 }

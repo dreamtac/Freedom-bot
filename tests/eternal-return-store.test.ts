@@ -160,6 +160,36 @@ describe("EternalReturnStore", () => {
     store.close();
   });
 
+  it("닉네임 조회에서 회전된 userId를 받으면 같은 닉네임의 저장 데이터를 합친다", async () => {
+    const { store } = await createStore();
+    store.upsertUser("old-token", "홉빵맨", new Date(1_000));
+    store.setAutoRefresh("old-token", true);
+    store.saveGamePage("old-token", [
+      game({ gameId: 100, damageToPlayer: 10_000 }),
+      game({ gameId: 101, damageToPlayer: 20_000 }),
+    ]);
+    store.updateCollectionState("old-token", {
+      kind: "latest", status: "succeeded", boundaryGameId: 101, succeededAt: new Date(2_000),
+    }, new Date(2_000));
+    store.putSeasonProfile({
+      userId: "old-token", seasonId: 18, matchingMode: 3, mmr: 4_000,
+      fetchedAt: new Date(2_000), expiresAt: new Date(3_000),
+    });
+
+    store.upsertUser("new-token", "홉빵맨", new Date(3_000));
+    store.saveGamePage("new-token", [game({ gameId: 101, damageToPlayer: 25_000 })]);
+    const resolved = store.upsertResolvedUser("new-token", "홉빵맨", new Date(4_000));
+
+    expect(resolved).toMatchObject({ userId: "new-token", autoRefresh: true });
+    expect(store.getUser("old-token")).toBeUndefined();
+    expect(store.findUsersByNickname("홉빵맨").map(user => user.userId)).toEqual(["new-token"]);
+    expect(store.listGames("new-token").map(item => [item.gameId, item.damageToPlayer]))
+      .toEqual([[101, 25_000], [100, 10_000]]);
+    expect(store.getCollectionState("new-token", "latest")?.boundaryGameId).toBe(101);
+    expect(store.getSeasonProfile("new-token", 18, 3)?.mmr).toBe(4_000);
+    store.close();
+  });
+
   it("공통 자료와 시즌 프로필 캐시를 키별로 갱신한다", async () => {
     const { store } = await createStore();
     store.upsertUser("uid", "테스터");

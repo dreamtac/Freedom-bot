@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageFlags } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 
-import { eternalReturnCommand, eternalReturnRecordCommand } from "../src/commands/eternal-return.js";
+import {
+  eternalReturnAnalysisCommand,
+  eternalReturnCommand,
+  eternalReturnDetailCommand,
+  eternalReturnRecordCommand,
+  eternalReturnSeasonCommand,
+} from "../src/commands/eternal-return.js";
 import { loadCommands } from "../src/commands/index.js";
 import * as api from "../src/sources/eternal-return.js";
 import * as names from "../src/sources/eternal-return-reference.js";
@@ -53,6 +59,13 @@ describe("eternalReturnCommand", () => {
     ] });
   });
 
+  it("상세·시즌·분석 독립 명령어는 닉네임 입력을 등록한다", () => {
+    for (const command of [eternalReturnDetailCommand, eternalReturnSeasonCommand, eternalReturnAnalysisCommand]) {
+      const data = command.data.toJSON();
+      expect(data.options).toEqual([expect.objectContaining({ name: "닉네임", required: true, max_length: 32 })]);
+    }
+  });
+
   it("키 미설정 시 개인 안내만 보내고 API를 호출하지 않는다", async () => {
     const request = vi.spyOn(api, "getRecentGamesByNickname");
     const target = interaction("전적");
@@ -62,7 +75,7 @@ describe("eternalReturnCommand", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("최근 전적은 기본 3경기를 공개 Embed로 표시한다", async () => {
+  it("최근 전적은 기본 5경기를 공개 Embed로 표시한다", async () => {
     vi.spyOn(api, "getRecentGamesByNickname").mockResolvedValue({
       code: 200, userGames: Array.from({ length: 10 }, () => ({ gameRank: 1, characterNum: 88, damageToPlayer: 6479 })),
     });
@@ -71,7 +84,7 @@ describe("eternalReturnCommand", () => {
     await execute(target);
     expect(target.deferReply).toHaveBeenCalledWith();
     const embed = target.editReply.mock.calls[0]?.[0].embeds[0].toJSON();
-    expect(embed.fields).toHaveLength(3);
+    expect(embed.fields).toHaveLength(5);
     expect(embed.fields[0].name).toContain("비형");
     expect(embed.fields[0].value).toContain("6,479");
   });

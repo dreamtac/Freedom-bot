@@ -19,6 +19,12 @@ import {
 } from "./eternal-return-formatters.js";
 import type { BotCommand } from "./types.js";
 import { errorDetails } from "../interaction-handler.js";
+import {
+  handleEternalReturnComponent,
+  startEternalReturnScreen,
+} from "./eternal-return-ui.js";
+
+export { handleEternalReturnComponent };
 
 export const eternalReturnCommand: BotCommand = {
   data: new SlashCommandBuilder()
@@ -30,7 +36,7 @@ export const eternalReturnCommand: BotCommand = {
       .addStringOption((option) => option
         .setName("닉네임").setDescription("현재 게임 닉네임").setRequired(true).setMinLength(1).setMaxLength(32))
       .addIntegerOption((option) => option
-        .setName("개수").setDescription("표시할 경기 수 (기본 3경기)").setMinValue(1).setMaxValue(5)))
+        .setName("개수").setDescription("표시할 경기 수 (기본 5경기)").setMinValue(1).setMaxValue(5)))
     .addSubcommand((subcommand) => subcommand
       .setName("랭크")
       .setDescription("시즌별 스쿼드 랭크 점수와 순위를 조회합니다.")
@@ -84,8 +90,12 @@ export const eternalReturnCommand: BotCommand = {
 
       if (subcommand === "전적") {
         const nickname = interaction.options.getString("닉네임", true).trim();
-        const count = interaction.options.getInteger("개수") ?? 3;
+        const count = interaction.options.getInteger("개수") ?? 5;
         stage = "recent-games-api";
+        if (context.eternalReturnCollector && context.eternalReturnStore) {
+          await startEternalReturnScreen(interaction, context, "games");
+          return;
+        }
         const collection = context.eternalReturnCollector
           ? await context.eternalReturnCollector.refreshNickname(nickname, "interactive")
           : undefined;
@@ -144,9 +154,54 @@ export const eternalReturnRecordCommand: BotCommand = {
     .addStringOption(option => option
       .setName("닉네임").setDescription("현재 게임 닉네임").setRequired(true).setMinLength(1).setMaxLength(32))
     .addIntegerOption(option => option
-      .setName("개수").setDescription("표시할 경기 수 (기본 3경기)").setMinValue(1).setMaxValue(5)),
+      .setName("개수").setDescription("표시할 경기 수 (기본 5경기)").setMinValue(1).setMaxValue(5)),
   execute: eternalReturnCommand.execute,
 };
+
+export const eternalReturnDetailCommand = screenCommand(
+  "상세전적", "이터널 리턴 최근 경기의 장비·특성·동선을 조회합니다.", "detail",
+);
+
+export const eternalReturnSeasonCommand = screenCommand(
+  "시즌전적", "이터널 리턴 현재 시즌 티어와 선호 실험체를 조회합니다.", "season",
+);
+
+export const eternalReturnAnalysisCommand = screenCommand(
+  "전적분석", "이터널 리턴 최근 전적과 이전 전적을 비교합니다.", "analysis",
+);
+
+function screenCommand(
+  name: "상세전적" | "시즌전적" | "전적분석",
+  description: string,
+  screen: "detail" | "season" | "analysis",
+): BotCommand {
+  return {
+    data: new SlashCommandBuilder()
+      .setName(name)
+      .setDescription(description)
+      .addStringOption(option => option
+        .setName("닉네임").setDescription("현재 게임 닉네임").setRequired(true).setMinLength(1).setMaxLength(32)),
+    async execute(interaction, context) {
+      if (context.erEnabled !== true) {
+        await interaction.reply({ content: "현재 이 봇에서 사용할 수 없는 기능입니다.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!context.erApiKey) {
+        await interaction.reply({ content: "이터널 리턴 API 키가 아직 설정되지 않았습니다.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply();
+      try {
+        await startEternalReturnScreen(interaction, context, screen);
+      } catch (error: unknown) {
+        console.error(`[interaction ${interaction.id}] eternal-return-${screen} failed`, errorDetails(error));
+        await interaction.editReply(error instanceof EternalReturnApiError
+          ? error.message
+          : "이터널 리턴 정보를 조회하는 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.");
+      }
+    },
+  };
+}
 
 async function loadNames(
   apiKey: string,

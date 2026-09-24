@@ -16,6 +16,10 @@ describe("manageEternalReturnUsers", () => {
     directories.push(directory);
     const databasePath = join(directory, "test.sqlite");
     const resolveUserId = vi.fn().mockResolvedValue("uid");
+    const previous = await EternalReturnStore.open(databasePath);
+    previous.upsertUser("old-uid", "홉빵맨");
+    previous.setAutoRefresh("old-uid", true);
+    previous.close();
 
     await expect(manageEternalReturnUsers(["add", "홉빵맨"], {
       databasePath,
@@ -28,6 +32,7 @@ describe("manageEternalReturnUsers", () => {
 
     const store = await EternalReturnStore.open(databasePath);
     expect(store.getUser("uid")?.autoRefresh).toBe(false);
+    expect(store.getUser("old-uid")?.autoRefresh).toBe(false);
     store.close();
   });
 });

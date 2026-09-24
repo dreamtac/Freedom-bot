@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 import Database from "better-sqlite3";
 
+import { normalizeEternalReturnGame } from "../services/eternal-return-game-normalizer.js";
 import type { EternalReturnGame } from "../sources/eternal-return.js";
 
 export type EternalReturnCollectionKind = "latest" | "backfill";
@@ -222,6 +223,102 @@ export class EternalReturnStore {
       `).run(userId, trimmedNickname, normalizedNickname, timestamp, timestamp);
     });
     transaction();
+    return this.getUser(userId)!;
+  }
+
+  /**
+   * 닉네임 조회 API가 매 요청마다 다른 불투명 userId를 반환하므로, 같은 닉네임으로
+   * 확인된 기존 레코드를 이번 응답의 userId로 합친다. 경기 ID 중복은 제거하고
+   * 더 최근의 수집 상태와 시즌 프로필을 보존한다.
+   */
+  upsertResolvedUser(userId: string, nickname: string, observedAt = new Date()): EternalReturnUserRecord {
+    const current = this.upsertUser(userId, nickname, observedAt);
+    const duplicates = this.findUsersByNickname(nickname).filter(user => user.userId !== userId);
+    if (duplicates.length === 0) return current;
+
+    const merge = this.#database.transaction(() => {
+      for (const duplicate of duplicates) {
+        this.#database.prepare(`
+          DELETE FROM er_games AS old
+          WHERE old.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_games AS fresh
+            WHERE fresh.user_id = ? AND fresh.game_id = old.game_id
+          )
+        `).run(duplicate.userId, userId);
+        this.#database.prepare("UPDATE er_games SET user_id = ? WHERE user_id = ?")
+          .run(userId, duplicate.userId);
+
+        this.#database.prepare(`
+          DELETE FROM er_season_profiles AS old
+          WHERE old.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_season_profiles AS fresh
+            WHERE fresh.user_id = ?
+              AND fresh.season_id = old.season_id
+              AND fresh.matching_mode = old.matching_mode
+              AND fresh.fetched_at >= old.fetched_at
+          )
+        `).run(duplicate.userId, userId);
+        this.#database.prepare(`
+          DELETE FROM er_season_profiles AS fresh
+          WHERE fresh.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_season_profiles AS old
+            WHERE old.user_id = ?
+              AND old.season_id = fresh.season_id
+              AND old.matching_mode = fresh.matching_mode
+              AND old.fetched_at > fresh.fetched_at
+          )
+        `).run(userId, duplicate.userId);
+        this.#database.prepare("UPDATE er_season_profiles SET user_id = ? WHERE user_id = ?")
+          .run(userId, duplicate.userId);
+
+        this.#database.prepare(`
+          DELETE FROM er_collection_state AS old
+          WHERE old.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_collection_state AS fresh
+            WHERE fresh.user_id = ? AND fresh.kind = old.kind AND fresh.updated_at >= old.updated_at
+          )
+        `).run(duplicate.userId, userId);
+        this.#database.prepare(`
+          DELETE FROM er_collection_state AS fresh
+          WHERE fresh.user_id = ? AND EXISTS (
+            SELECT 1 FROM er_collection_state AS old
+            WHERE old.user_id = ? AND old.kind = fresh.kind AND old.updated_at > fresh.updated_at
+          )
+        `).run(userId, duplicate.userId);
+        this.#database.prepare("UPDATE er_collection_state SET user_id = ? WHERE user_id = ?")
+          .run(userId, duplicate.userId);
+
+        const aliases = this.#database.prepare(`
+          SELECT nickname, normalized_nickname, first_seen_at, last_seen_at
+          FROM er_user_nicknames WHERE user_id = ?
+        `).all(duplicate.userId) as Array<{
+          nickname: string; normalized_nickname: string; first_seen_at: number; last_seen_at: number;
+        }>;
+        for (const alias of aliases) {
+          this.#database.prepare(`
+            INSERT INTO er_user_nicknames (
+              user_id, nickname, normalized_nickname, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_nickname) DO UPDATE SET
+              nickname = CASE
+                WHEN excluded.last_seen_at > er_user_nicknames.last_seen_at THEN excluded.nickname
+                ELSE er_user_nicknames.nickname
+              END,
+              first_seen_at = MIN(er_user_nicknames.first_seen_at, excluded.first_seen_at),
+              last_seen_at = MAX(er_user_nicknames.last_seen_at, excluded.last_seen_at)
+          `).run(userId, alias.nickname, alias.normalized_nickname, alias.first_seen_at, alias.last_seen_at);
+        }
+        this.#database.prepare("DELETE FROM er_users WHERE user_id = ?").run(duplicate.userId);
+      }
+      this.#database.prepare(`
+        UPDATE er_users SET auto_refresh = ?, first_seen_at = ? WHERE user_id = ?
+      `).run(
+        duplicates.some(user => user.autoRefresh) || current.autoRefresh ? 1 : 0,
+        Math.min(current.firstSeenAt.getTime(), ...duplicates.map(user => user.firstSeenAt.getTime())),
+        userId,
+      );
+    });
+    merge();
     return this.getUser(userId)!;
   }
 
@@ -534,7 +631,9 @@ function gameUpsertSql(): string {
 }
 
 function gameValues(userId: string, game: EternalReturnGame, now: number): Record<string, unknown> | undefined {
-  const source = game as Record<string, unknown>;
+  const normalized = normalizeEternalReturnGame(game);
+  if (!normalized) return undefined;
+  const source = normalized as Record<string, unknown>;
   const gameId = nullableNumber(source.gameId);
   if (gameId === null || !Number.isSafeInteger(gameId)) return undefined;
   const values: Record<string, unknown> = { user_id: userId, game_id: gameId };

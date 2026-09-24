@@ -50,6 +50,7 @@ export interface CurrentSeasonProfile {
   fetchedAt: Date;
   expiresAt?: Date;
   cached: boolean;
+  stale?: boolean;
 }
 
 interface EternalReturnProfileServiceOptions {
@@ -97,14 +98,20 @@ export class EternalReturnProfileService {
     const key = `${userId}:${seasonId}:${matchingMode}`;
     const cached = this.#store.getSeasonProfile<EternalReturnUserStats, EternalReturnRank>(userId, seasonId, matchingMode);
     if (!options.force && cached?.expiresAt && cached.expiresAt.getTime() > this.#now().getTime()) {
-      return this.#toProfile(userId, season, cached, true);
+      return this.#toProfile(userId, season, cached, true, false);
     }
     const existing = this.#refreshes.get(key);
-    if (existing) return existing;
+    if (existing) {
+      return cached
+        ? existing.catch(() => this.#toProfile(userId, season, cached, true, true))
+        : existing;
+    }
     const request = this.#refresh(userId, season, matchingMode, options.priority ?? "interactive")
       .finally(() => this.#refreshes.delete(key));
     this.#refreshes.set(key, request);
-    return request;
+    return cached
+      ? request.catch(() => this.#toProfile(userId, season, cached, true, true))
+      : request;
   }
 
   async #refresh(
@@ -135,7 +142,7 @@ export class EternalReturnProfileService {
       expiresAt: new Date(fetchedAt.getTime() + PROFILE_TTL_MS),
     };
     this.#store.putSeasonProfile(stored);
-    return this.#toProfile(userId, season, stored, false);
+    return this.#toProfile(userId, season, stored, false, false);
   }
 
   #toProfile(
@@ -143,6 +150,7 @@ export class EternalReturnProfileService {
     season: EternalReturnSeason,
     stored: EternalReturnSeasonProfile<EternalReturnUserStats, EternalReturnRank>,
     cached: boolean,
+    stale: boolean,
   ): CurrentSeasonProfile {
     const user = this.#store.getUser(userId);
     if (!user) throw new Error(`알 수 없는 이터널 리턴 UID입니다: ${userId}`);
@@ -194,6 +202,7 @@ export class EternalReturnProfileService {
       fetchedAt: stored.fetchedAt,
       ...(stored.expiresAt ? { expiresAt: stored.expiresAt } : {}),
       cached,
+      ...(stale ? { stale: true } : {}),
     };
   }
 }

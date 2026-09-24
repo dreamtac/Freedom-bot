@@ -29,6 +29,16 @@ const coreCommands: readonly BotCommand[] = [
 // services/stores belong behind this gate, not at a shared module's top level.
 export async function loadCommands(config: { erEnabled: boolean }): Promise<readonly BotCommand[]> {
   if (!config.erEnabled) return [...coreCommands];
-  const { eternalReturnCommand, eternalReturnRecordCommand } = await import("./eternal-return.js");
-  return [coreCommands[0]!, eternalReturnCommand, eternalReturnRecordCommand, ...coreCommands.slice(1)];
+  const {
+    eternalReturnCommand,
+    eternalReturnRecordCommand,
+    eternalReturnDetailCommand,
+    eternalReturnSeasonCommand,
+    eternalReturnAnalysisCommand,
+  } = await import("./eternal-return.js");
+  return [
+    coreCommands[0]!, eternalReturnCommand, eternalReturnRecordCommand,
+    eternalReturnDetailCommand, eternalReturnSeasonCommand, eternalReturnAnalysisCommand,
+    ...coreCommands.slice(1),
+  ];
 }

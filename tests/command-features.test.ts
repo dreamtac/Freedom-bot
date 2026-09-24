@@ -27,8 +27,11 @@ describe("feature command registry", () => {
     const { loadCommands } = await import("../src/commands/index.js");
     const development = await loadCommands({ erEnabled: true });
     expect(featureLoaded).toHaveBeenCalledOnce();
-    expect(development.map(command => command.data.name)).toEqual(expect.arrayContaining(["이터널리턴", "전적"]));
+    expect(development.map(command => command.data.name)).toEqual(expect.arrayContaining([
+      "이터널리턴", "전적", "상세전적", "시즌전적", "전적분석",
+    ]));
     const production = await loadCommands({ erEnabled: false });
-    expect(production.map(command => command.data.name)).toEqual(development.map(command => command.data.name).filter(name => !["이터널리턴", "전적"].includes(name)));
+    expect(production.map(command => command.data.name)).toEqual(development.map(command => command.data.name)
+      .filter(name => !["이터널리턴", "전적", "상세전적", "시즌전적", "전적분석"].includes(name)));
   });
 });

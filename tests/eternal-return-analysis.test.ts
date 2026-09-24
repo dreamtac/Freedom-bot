@@ -10,7 +10,8 @@ describe("analyzeEternalReturnPerformance", () => {
       game(3, 1, 50, 5), game(2, 2, 150, 4), game(1, 2, undefined, 6),
     ];
     const listGames = vi.fn(() => games);
-    const store = { listGames };
+    const countGames = vi.fn(() => 86);
+    const store = { listGames, countGames };
     const result = analyzeEternalReturnPerformance(store, "uid", {
       seasonId: 41, matchingMode: 3, windowSize: 3,
     });
@@ -24,6 +25,7 @@ describe("analyzeEternalReturnPerformance", () => {
     expect(result.byCharacter.find(entry => entry.characterNum === 1)?.result)
       .toMatchObject({ recentGames: 2, previousGames: 1 });
     expect(result.complete).toBe(true);
+    expect(result.totalStoredGames).toBe(86);
     expect(result.patches).toEqual(["1.2.3"]);
     expect(listGames).toHaveBeenCalledWith("uid", { seasonId: 41, matchingMode: 3, limit: 6 });
   });

@@ -122,7 +122,7 @@ export class EternalReturnCollector {
   ): Promise<EternalReturnCollectionResult> {
     if (!nickname) throw new Error("이터널 리턴 닉네임이 필요합니다.");
     const userId = await this.#resolveUserId(nickname, this.#apiKey, { priority });
-    this.#store.upsertUser(userId, nickname, this.#now());
+    this.#store.upsertResolvedUser(userId, nickname, this.#now());
     return this.refreshUser(userId, priority);
   }
 

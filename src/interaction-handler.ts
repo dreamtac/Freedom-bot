@@ -35,6 +35,13 @@ export async function handleInteraction(
       }
       return;
     }
+    if (interaction.isMessageComponent() && isEternalReturnComponent(interaction.customId)) {
+      const { handleEternalReturnComponent } = await import("./commands/eternal-return.js");
+      if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        await handleEternalReturnComponent(interaction, context);
+      }
+      return;
+    }
     if (!interaction.isChatInputCommand() && !interaction.isAutocomplete()) return;
     const command = commands.get(interaction.commandName);
     if (!command) {

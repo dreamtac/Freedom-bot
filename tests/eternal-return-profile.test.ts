@@ -76,7 +76,7 @@ describe("EternalReturnProfileService", () => {
     store.close();
   });
 
-  it("랭크 기록이 없어도 빈 프로필을 저장하고 통계 실패는 캐시하지 않는다", async () => {
+  it("랭크 기록이 없어도 빈 프로필을 저장하고 갱신 실패 시 이전 캐시를 표시한다", async () => {
     const store = await createStore();
     store.upsertUser("uid", "테스터");
     const loadSeasons = vi.fn().mockResolvedValue([{ seasonID: 41, seasonName: "Season21", isCurrent: 1 }]);
@@ -94,8 +94,8 @@ describe("EternalReturnProfileService", () => {
       apiKey: "key", store, loadSeasons, loadStats,
       loadRank: vi.fn().mockResolvedValue({ code: 404 }),
     });
-    await expect(failing.getCurrentSeasonProfile("uid", { force: true })).rejects.toThrow("stats unavailable");
-    await expect(failing.getCurrentSeasonProfile("uid", { force: true })).rejects.toThrow("stats unavailable");
+    await expect(failing.getCurrentSeasonProfile("uid", { force: true })).resolves.toMatchObject({ stale: true, cached: true });
+    await expect(failing.getCurrentSeasonProfile("uid", { force: true })).resolves.toMatchObject({ stale: true, cached: true });
     expect(loadStats).toHaveBeenCalledTimes(2);
     store.close();
   });
