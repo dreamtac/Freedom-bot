@@ -10,6 +10,9 @@ export interface EternalReturnReferences {
   itemName(code: unknown): string;
   areaName(value: unknown): string;
   traitName(code: unknown): string;
+  tacticalSkillName(code: unknown): string;
+  gadgetName(code: unknown): string;
+  skillName(code: unknown): string;
 }
 
 interface ReferenceInput {
@@ -67,6 +70,16 @@ const LEGACY_AREA_NAMES: Record<number, string> = {
   170: "Factory",
   180: "Church",
   190: "School",
+};
+
+const GADGET_NAMES: Readonly<Record<number, string>> = {
+  8_300_101: "키오스크 호출기",
+  8_300_201: "휴대용 VLS",
+  8_300_301: "사냥꾼의 솥단지",
+  8_300_401: "ORB - 감시",
+  8_310_201: "키트 - 강풍지대",
+  8_310_301: "휴대용 안전지대",
+  8_310_501: "CNOT 게이트",
 };
 
 function parseL10n(text: string) {
@@ -202,6 +215,29 @@ function createReferenceData({ characters, items, areas, traits, l10n }: Referen
       const numericCode = Number(code);
       const row = traitByCode.get(numericCode);
       return l10nName(`Trait/Name/${numericCode}`) || row?.name || fallback(code);
+    },
+
+    tacticalSkillName(code) {
+      const numericCode = Number(code);
+      return l10nName(`TacticalSkill/Name/${numericCode}`)
+        || l10nName(`TacticalSkillGroup/Name/${numericCode}`)
+        || l10nName(`Skill/Name/${numericCode}`)
+        || `전술 스킬 ${fallback(code)}`;
+    },
+
+    gadgetName(code) {
+      const numericCode = Number(code);
+      return l10nName(`Gadget/Name/${numericCode}`)
+        || l10nName(`Skill/Name/${numericCode}`)
+        || GADGET_NAMES[numericCode]
+        || `가젯 ${fallback(code)}`;
+    },
+
+    skillName(code) {
+      const normalized = String(code).trim().toUpperCase();
+      if (["Q", "W", "E", "R", "T", "D", "F"].includes(normalized)) return normalized;
+      const numericCode = Number(code);
+      return l10nName(`Skill/Name/${numericCode}`) || fallback(code);
     },
   };
 }

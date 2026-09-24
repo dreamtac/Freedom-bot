@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   erGet, getRecentGamesByNickname, getRankByNickname, getGamesByUserId,
   getUserIdByNickname, getGameResults, getFreeCharacters, getRankByUserId,
-  getUserStatsByUserId,
+  getUserStatsByUserId, getRecommendedWeaponRoute,
 } from "../src/sources/eternal-return.js";
 import { getReferenceData as loadReferenceData, createEmptyReferenceData } from "../src/sources/eternal-return-reference.js";
 import { buildRecentGamesEmbed, buildGameDetailEmbed, buildRankEmbed, buildFreeCharactersEmbed } from "../src/commands/eternal-return-formatters.js";
@@ -62,6 +62,26 @@ test("user game pagination sends the returned next value as an encoded query", a
   };
   const result = await getGamesByUserId("uid/a", key, { next: "cursor+1", priority: "backfill" });
   assert.equal(result.next, "next-2");
+});
+
+test("recommended route endpoint returns title, current likes, and skill path", async () => {
+  global.fetch = async (url) => {
+    assert.equal(url, "https://open-api.bser.io/v1/weaponRoutes/recommend/5212");
+    return json({
+      code: 200,
+      result: {
+        recommendWeaponRoute: {
+          id: 5212, title: "호묘부활", v2Like: 4732, v2AccumulateLike: 5000,
+          v2SeasonId: 18, updateDtm: 1787736079000,
+        },
+        recommendWeaponRouteDesc: { skillPath: "q, e, w, , r" },
+      },
+    });
+  };
+  assert.deepEqual(await getRecommendedWeaponRoute(5212, key), {
+    routeId: 5212, title: "호묘부활", likes: 4732, accumulatedLikes: 5000,
+    seasonId: 18, updateDtm: 1787736079000, skillPath: ["q", "e", "w", "r"],
+  });
 });
 
 test("simultaneous recent-match lookups for one nickname share UID and game requests", async () => {

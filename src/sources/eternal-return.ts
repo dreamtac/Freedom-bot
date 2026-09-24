@@ -210,6 +210,21 @@ export interface ReferenceRow {
   name?: string;
 }
 
+export interface EternalReturnWeaponRoute {
+  routeId: number;
+  title?: string;
+  likes?: number;
+  accumulatedLikes?: number;
+  seasonId?: number;
+  updateDtm?: number;
+  skillPath?: string[];
+}
+
+interface WeaponRouteApiResult {
+  recommendWeaponRoute?: Record<string, unknown>;
+  recommendWeaponRouteDesc?: Record<string, unknown>;
+}
+
 export interface EternalReturnResponse {
   code: number;
   message?: string;
@@ -221,6 +236,7 @@ export interface EternalReturnResponse {
   userStats?: EternalReturnUserStats | EternalReturnUserStats[];
   freeCharacters?: number[];
   data?: ReferenceRow[] | { l10Path?: string };
+  result?: WeaponRouteApiResult;
   next?: number | string;
 }
 
@@ -333,6 +349,40 @@ export async function getGamesByUserId(
     apiKey,
     options,
   );
+}
+
+export async function getRecommendedWeaponRoute(
+  routeId: number,
+  apiKey: string,
+  options: EternalReturnRequestOptions = {},
+): Promise<EternalReturnWeaponRoute | undefined> {
+  if (!Number.isSafeInteger(routeId) || routeId <= 0) return undefined;
+  const response = await erGet(`/v1/weaponRoutes/recommend/${routeId}`, apiKey, options);
+  if (response.code === 404) return undefined;
+  const route = response.result?.recommendWeaponRoute;
+  if (!route || Number(route.id) !== routeId) return undefined;
+  const description = response.result?.recommendWeaponRouteDesc;
+  const skillPath = typeof description?.skillPath === "string"
+    ? description.skillPath.split(",").map(value => value.trim()).filter(Boolean)
+    : undefined;
+  const likes = finiteNumber(route.v2Like);
+  const accumulatedLikes = finiteNumber(route.v2AccumulateLike);
+  const seasonId = finiteNumber(route.v2SeasonId);
+  const updateDtm = finiteNumber(route.updateDtm);
+  return {
+    routeId,
+    ...(typeof route.title === "string" && route.title.trim() ? { title: route.title.trim() } : {}),
+    ...(likes !== undefined ? { likes } : {}),
+    ...(accumulatedLikes !== undefined ? { accumulatedLikes } : {}),
+    ...(seasonId !== undefined ? { seasonId } : {}),
+    ...(updateDtm !== undefined ? { updateDtm } : {}),
+    ...(skillPath && skillPath.length > 0 ? { skillPath } : {}),
+  };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 const recentGameRequests = new Map<string, Promise<EternalReturnResponse>>();
