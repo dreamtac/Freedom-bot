@@ -122,6 +122,15 @@ describe("loadConfig", () => {
     })).toThrow("ER_API_KEY");
   });
 
+  it("전체 전적 기능이 꺼져 있으면 게임 결과 설정이 남아 있어도 초기화하지 않는다", () => {
+    expect(loadConfig({
+      ...required,
+      ER_ENABLED: "false",
+      ER_API_KEY: "unused",
+      ER_RECEIPTS_ENABLED: "true",
+    })).toMatchObject({ erEnabled: false, erReceiptsEnabled: false });
+  });
+
   it.each(["0", "1", "yes", "FALSE", "typo"])("잘못된 기능 설정 %s를 거부한다", flag => {
     expect(() => loadConfig({ ...required, ER_ENABLED: flag })).toThrow("ER_ENABLED");
   });

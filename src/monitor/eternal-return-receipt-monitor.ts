@@ -31,6 +31,7 @@ export class EternalReturnReceiptMonitor {
   readonly #maxAttempts: number;
   readonly #logger: Pick<Console, "log" | "error">;
   #active: Promise<EternalReturnReceiptMonitorResult> | undefined;
+  #stopped = false;
 
   constructor(options: EternalReturnReceiptMonitorOptions) {
     this.#client = options.client;
@@ -47,12 +48,18 @@ export class EternalReturnReceiptMonitor {
   }
 
   checkNow(): Promise<EternalReturnReceiptMonitorResult> {
+    if (this.#stopped) return Promise.resolve({ sent: 0, failed: 0 });
     if (this.#active) return this.#active;
     const request = this.#dispatch().finally(() => {
       if (this.#active === request) this.#active = undefined;
     });
     this.#active = request;
     return request;
+  }
+
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    await this.#active;
   }
 
   async #dispatch(): Promise<EternalReturnReceiptMonitorResult> {

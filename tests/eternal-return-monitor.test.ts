@@ -152,6 +152,43 @@ describe("EternalReturnMonitor", () => {
       players: [{ userId: "d", teamNumber: 9 }],
     });
   });
+
+  it("게임 결과 발송 오류가 자동 전적 수집 주기를 실패시키지 않는다", async () => {
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const dispatchReceipts = vi.fn().mockRejectedValue(new Error("Discord unavailable"));
+    const monitor = new EternalReturnMonitor({
+      store: monitorStore([{ userId: "uid", nickname: "홉빵맨" }]),
+      collector: { refreshNickname: vi.fn().mockResolvedValue(result("uid", 2)), backfill: vi.fn() },
+      intervalMs: 300_000,
+      receiptsEnabled: true,
+      dispatchReceipts,
+      logger,
+    });
+    await expect(monitor.checkNow()).resolves.toEqual({
+      users: 1, succeeded: 1, failed: 0, storedGames: 2, queuedReceipts: 0,
+    });
+    expect(dispatchReceipts).toHaveBeenCalledOnce();
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("게임 결과 발송"), expect.any(Error));
+  });
+
+  it("게임 결과 기능이 꺼져 있으면 구독 DB와 발송기를 전혀 호출하지 않는다", async () => {
+    const listReceiptEnabledUsers = vi.fn();
+    const enqueueGameReceiptBatch = vi.fn();
+    const dispatchReceipts = vi.fn();
+    const monitor = new EternalReturnMonitor({
+      store: monitorStore([{ userId: "uid", nickname: "홉빵맨" }], {
+        listReceiptEnabledUsers, enqueueGameReceiptBatch,
+      }),
+      collector: { refreshNickname: vi.fn().mockResolvedValue(result("uid")), backfill: vi.fn() },
+      intervalMs: 300_000,
+      receiptsEnabled: false,
+      dispatchReceipts,
+    });
+    await monitor.checkNow();
+    expect(listReceiptEnabledUsers).not.toHaveBeenCalled();
+    expect(enqueueGameReceiptBatch).not.toHaveBeenCalled();
+    expect(dispatchReceipts).not.toHaveBeenCalled();
+  });
 });
 
 function monitorStore(

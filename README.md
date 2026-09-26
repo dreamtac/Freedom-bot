@@ -141,6 +141,7 @@ npm run audit:er-receipts -- --pages 6 --output reports/eternal-return-game-rece
 npm run manage:eternal-return -- add 홉빵맨
 npm run manage:eternal-return -- list
 npm run manage:eternal-return -- disable 홉빵맨
+npm run manage:eternal-return -- status
 ```
 
 동일 닉네임 이력이 여러 UID에 있으면 `disable`에 UID를 직접 입력합니다. 관리 도구와 진단 도구는 별도 프로세스이므로 실행 중인 봇과 동시에 API를 호출하지 않습니다.
@@ -153,7 +154,58 @@ npm run manage:eternal-return -- disable 홉빵맨
 
 전적 화면의 버튼과 선택 메뉴는 기존 메시지를 갱신하며 명령을 실행한 사용자만 조작할 수 있습니다. 화면 세션은 마지막 조작부터 15분간 유지됩니다. 봇 재시작 또는 만료 뒤 버튼을 누르면 명령어를 다시 실행하라는 안내를 표시합니다. 아직 저장되지 않은 다음 페이지는 버튼 요청을 먼저 대기 처리한 뒤 과거 수집 커서에서 추가로 가져옵니다. 시즌 프로필 갱신이 실패했지만 이전 캐시가 있으면 갱신 실패와 캐시 사용 사실을 함께 표시합니다. [구현 TODO](reports/eternal-return-implementation-todo.md)에서 진행 상태를 확인할 수 있습니다.
 
-새 게임을 발견했을 때 전투·팀 기여·크레딧·행동·빌드를 자동 요약하는 후속 기능은 [게임 결과 알림 TODO](reports/eternal-return-game-receipt-todo.md)에 설계와 구현 순서를 정리했습니다.
+### 이터널 리턴 게임 결과 자동 알림
+
+자동 수집 유저의 새 경기가 발견되면 짧은 게임 결과를 Discord에 보내고, 전투·팀 기여·크레딧·행동·빌드는 버튼으로 확인할 수 있습니다. 팀원이 함께 등록돼 있으면 같은 `gameId`의 알림은 채널당 하나만 전송됩니다. 상세 화면은 버튼을 누른 사용자에게만 보이며 DB 스냅샷을 사용하므로 버튼 클릭 시 API를 추가 호출하지 않습니다.
+
+개발용 `.env`에 아래 값을 설정합니다. 미니PC 운영 봇처럼 이 기능을 사용하지 않는 환경은 `ER_ENABLED=false`를 유지하면 저장소·수집기·게임 결과 모듈을 초기화하지 않습니다. 전적 조회만 쓰고 자동 결과를 끄려면 `ER_ENABLED=true`, `ER_RECEIPTS_ENABLED=false`로 둡니다.
+
+```dotenv
+ER_ENABLED=true
+ER_API_KEY=개인_API_키
+ER_REFRESH_INTERVAL_MS=300000
+ER_RECEIPTS_ENABLED=true
+ER_RECEIPT_CHANNEL_ID=게임_결과를_보낼_채널_ID
+ER_RECEIPT_MAX_PER_CYCLE=3
+```
+
+`ER_RECEIPT_CHANNEL_ID`의 채널에서 봇에 **채널 보기**, **메시지 보내기**, **링크 첨부(Embed Links)** 권한을 부여합니다. 봇 시작 시 세 권한과 채널 접근을 진단하며, 실패하면 게임 결과 발송만 중단하고 자동 전적 수집·엔드필드·KIS 모니터는 계속 실행합니다.
+
+자동 수집과 게임 결과 구독은 별도 설정입니다. 먼저 자동 수집에 등록한 뒤 게임 결과를 켭니다. 처음 켤 때 이미 DB에 저장된 경기는 기준선으로만 기록되어 과거 알림이 발송되지 않습니다.
+
+```bash
+npm run manage:eternal-return -- add 홉빵맨
+npm run manage:eternal-return -- receipt 홉빵맨 on
+npm run manage:eternal-return -- receipt 홉빵맨 status
+npm run manage:eternal-return -- status
+```
+
+유저별로 다른 채널을 사용하려면 마지막 인수에 채널 ID를 지정합니다. 알림만 끄더라도 자동 수집은 유지됩니다.
+
+```bash
+npm run manage:eternal-return -- receipt 홉빵맨 on 123456789012345678
+npm run manage:eternal-return -- receipt 홉빵맨 off
+```
+
+#### 반영과 백업
+
+1. 실행 중인 개발 봇을 중지합니다. 개인키 요청 제한을 공유하므로 관리 도구와 봇을 동시에 실행하지 않습니다.
+2. `npm run backup:db`로 `.data/backups`에 SQLite 백업을 만듭니다.
+3. `.env`를 설정하고 자동 수집·게임 결과 대상 유저를 등록합니다.
+4. `npm run typecheck`, `npm test`, `npm run build`를 실행합니다.
+5. 봇을 재시작하고 시작 로그에 게임 결과 채널 권한 오류가 없는지 확인합니다.
+
+슬래시 명령어 자체는 추가되지 않으므로 게임 결과 설정만 바꾼 경우 명령어 재등록은 필요하지 않습니다. 전적 명령어도 처음 활성화하는 환경에서는 기존 개발 봇 반영 순서대로 `npm run register:commands`를 실행합니다.
+
+#### 문제 해결과 복구
+
+- 알림이 오지 않으면 `npm run manage:eternal-return -- status`에서 **자동 수집 ON**, **게임 결과 ON**, 채널 ID를 확인합니다.
+- 시작 로그의 채널 보기·메시지 보내기·Embed Links 오류를 해결한 뒤 봇을 재시작합니다. 권한이 복구되면 대기 중인 결과부터 발송합니다.
+- Discord 전송 실패는 최대 3회 재시도한 뒤 `failed`로 남겨 5분마다 같은 오류를 반복하지 않습니다.
+- DB를 복원할 때는 봇을 중지하고 현재 `.data/freedom-bot.sqlite`를 별도 보관한 뒤 `.data/backups`의 검증된 백업으로 교체합니다.
+- 전체 이터널 리턴 기능을 운영 환경에서 숨기려면 `ER_ENABLED=false`로 바꾸고 봇을 재시작합니다. 엔드필드와 KIS 설정에는 영향을 주지 않습니다.
+
+상세 설계와 남은 실제 통합 검증은 [게임 결과 알림 TODO](reports/eternal-return-game-receipt-todo.md)에서 확인할 수 있습니다.
 
 ### 이터널 리턴 개발 봇 반영 순서
 

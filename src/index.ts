@@ -48,6 +48,7 @@ async function startBot(): Promise<void> {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
+  let eternalReturnReceiptChannelReady = false;
   const eternalReturnReceiptMonitor = config.erReceiptsEnabled && config.erReceiptChannelId
     && eternalReturnStore && config.erApiKey
     ? new (await import("./monitor/eternal-return-receipt-monitor.js")).EternalReturnReceiptMonitor({
@@ -73,7 +74,9 @@ async function startBot(): Promise<void> {
         receiptsEnabled: config.erReceiptsEnabled,
         ...(config.erReceiptChannelId ? { defaultReceiptChannelId: config.erReceiptChannelId } : {}),
         ...(eternalReturnReceiptMonitor
-          ? { dispatchReceipts: () => eternalReturnReceiptMonitor.checkNow() }
+          ? { dispatchReceipts: () => eternalReturnReceiptChannelReady
+              ? eternalReturnReceiptMonitor.checkNow()
+              : Promise.resolve({ sent: 0, failed: 0 }) }
           : {}),
       })
     : undefined;
@@ -150,12 +153,34 @@ async function startBot(): Promise<void> {
     }
     marketCloseReportMonitor?.start();
     stockMasterMonitor.start();
-    if (eternalReturnMonitor) {
+    if (eternalReturnReceiptMonitor && config.erReceiptChannelId) {
       void (async () => {
-        await eternalReturnReceiptMonitor?.start();
-        await eternalReturnMonitor.start();
+        const { diagnoseEternalReturnReceiptChannel } = await import(
+          "./features/eternal-return-receipt-diagnostics.js"
+        );
+        const channelIds = new Set([
+          config.erReceiptChannelId!,
+          ...eternalReturnStore!.listReceiptEnabledUsers()
+            .flatMap(user => user.receiptChannelId ? [user.receiptChannelId] : []),
+        ]);
+        let availableChannels = 0;
+        for (const channelId of channelIds) {
+          const diagnostic = await diagnoseEternalReturnReceiptChannel(readyClient, channelId);
+          if (diagnostic.ok) availableChannels += 1;
+          else for (const issue of diagnostic.issues) console.error(issue);
+        }
+        if (availableChannels === 0) {
+          return;
+        }
+        eternalReturnReceiptChannelReady = true;
+        await eternalReturnReceiptMonitor.start();
       })().catch((error: unknown) => {
-        console.error("이터널 리턴 자동 갱신 또는 게임 결과 모니터를 시작하지 못했습니다.", error);
+        console.error("이터널 리턴 게임 결과 모니터를 시작하지 못했습니다.", error);
+      });
+    }
+    if (eternalReturnMonitor) {
+      void eternalReturnMonitor.start().catch((error: unknown) => {
+        console.error("이터널 리턴 자동 갱신 모니터를 시작하지 못했습니다.", error);
       });
     }
   });
@@ -190,11 +215,12 @@ async function startBot(): Promise<void> {
     priceAlertMonitor?.stop();
     marketCloseReportMonitor?.stop();
     stockMasterMonitor.stop();
-    client.destroy();
     const eternalReturnMonitorStop = eternalReturnMonitor?.stop();
+    const eternalReturnReceiptMonitorStop = eternalReturnReceiptMonitor?.stop();
+    await Promise.all([eternalReturnMonitorStop, eternalReturnReceiptMonitorStop]);
     shutdownEternalReturn?.();
-    await eternalReturnMonitorStop;
     await eternalReturnCollector?.shutdown();
+    client.destroy();
     eternalReturnStore?.close();
     priceAlertStore.close();
     stockStore.close();

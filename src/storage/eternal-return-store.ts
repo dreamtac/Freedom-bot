@@ -544,6 +544,11 @@ export class EternalReturnStore {
       .all() as UserRow[]).map(toUser);
   }
 
+  listUsers(): EternalReturnUserRecord[] {
+    return (this.#database.prepare("SELECT * FROM er_users ORDER BY nickname, user_id")
+      .all() as UserRow[]).map(toUser);
+  }
+
   setReceiptSettings(userId: string, enabled: boolean, channelId?: string | null): void {
     const previous = this.getUser(userId);
     if (!previous) throw new Error(`알 수 없는 이터널 리턴 UID입니다: ${userId}`);

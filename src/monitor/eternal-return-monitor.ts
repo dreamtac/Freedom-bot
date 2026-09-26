@@ -132,7 +132,13 @@ export class EternalReturnMonitor {
       }
     }
     const queuedReceipts = this.#queueDetectedGames();
-    if (this.#receiptsEnabled && this.#dispatchReceipts) await this.#dispatchReceipts();
+    if (this.#receiptsEnabled && this.#dispatchReceipts) {
+      try {
+        await this.#dispatchReceipts();
+      } catch (error: unknown) {
+        this.#logger.error("이터널 리턴 게임 결과 발송 주기를 실행하지 못했습니다.", error);
+      }
+    }
     return { users: usersByNickname.size, succeeded, failed, storedGames, queuedReceipts };
   }
 
