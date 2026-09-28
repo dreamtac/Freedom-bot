@@ -42,22 +42,37 @@ describe("manageEternalReturnUsers", () => {
     const databasePath = join(directory, "test.sqlite");
     const store = await EternalReturnStore.open(databasePath);
     store.upsertUser("uid", "홉빵맨");
+    store.upsertUser("old-uid", "홉빵맨");
     store.setAutoRefresh("uid", true);
     store.saveGamePage("uid", [{ gameId: 700, characterNum: 1 }]);
+    store.saveGamePage("old-uid", [{ gameId: 699, characterNum: 1 }]);
     store.close();
     const environment = {
       ER_ENABLED: "true",
       ER_RECEIPTS_ENABLED: "true",
+      ER_API_KEY: "key",
       ER_RECEIPT_CHANNEL_ID: "12345678901234567",
     };
 
-    await expect(manageEternalReturnUsers(["receipt", "홉빵맨", "on"], { databasePath, environment }))
+    await expect(manageEternalReturnUsers(["receipt", "홉빵맨", "on"], {
+      databasePath,
+      environment,
+      refreshBeforeReceipt: vi.fn(async (_nickname, _apiKey, refreshedStore) => {
+        refreshedStore.saveGamePage("uid", [{ gameId: 701, characterNum: 1 }], {
+          kind: "latest", status: "succeeded", boundaryGameId: 701,
+          receiptEligibleGameIds: [701],
+        });
+        return "uid";
+      }),
+    }))
       .resolves.toContain("게임 결과 알림을 켰습니다");
-    await expect(manageEternalReturnUsers(["status", "홉빵맨"], { databasePath }))
+    await expect(manageEternalReturnUsers(["status", "uid"], { databasePath }))
       .resolves.toContain("자동 수집 ON\t게임 결과 ON\t채널 12345678901234567");
 
     const inspected = await EternalReturnStore.open(databasePath);
     expect(inspected.getGameReceiptByChannelGame("12345678901234567", 700)?.status).toBe("suppressed");
+    expect(inspected.getGameReceiptByChannelGame("12345678901234567", 699)?.status).toBe("suppressed");
+    expect(inspected.getGameReceiptByChannelGame("12345678901234567", 701)?.status).toBe("suppressed");
     inspected.close();
 
     await expect(manageEternalReturnUsers(["receipt", "홉빵맨", "off"], { databasePath }))
@@ -73,7 +88,7 @@ describe("manageEternalReturnUsers", () => {
     const store = await EternalReturnStore.open(databasePath);
     store.upsertUser("uid", "테스터");
     store.close();
-    const environment = { ER_ENABLED: "true", ER_RECEIPTS_ENABLED: "true" };
+    const environment = { ER_ENABLED: "true", ER_RECEIPTS_ENABLED: "true", ER_API_KEY: "key" };
     await expect(manageEternalReturnUsers(["receipt", "테스터", "on"], { databasePath, environment }))
       .rejects.toThrow("자동 수집");
 

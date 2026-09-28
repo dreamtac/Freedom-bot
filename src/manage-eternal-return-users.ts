@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { readEternalReturnConfig } from "./features/eternal-return-policy.js";
+import { EternalReturnCollector } from "./services/eternal-return-collector.js";
 import { getUserIdByNickname } from "./sources/eternal-return.js";
 import { shutdownEternalReturnRequests } from "./sources/eternal-return-request-queue.js";
 import { EternalReturnStore, type EternalReturnUserRecord } from "./storage/eternal-return-store.js";
@@ -14,6 +15,11 @@ export async function manageEternalReturnUsers(
     databasePath?: string;
     environment?: NodeJS.ProcessEnv;
     resolveUserId?: typeof getUserIdByNickname;
+    refreshBeforeReceipt?: (
+      nickname: string,
+      apiKey: string,
+      store: EternalReturnStore,
+    ) => Promise<string>;
   } = {},
 ): Promise<string> {
   const [command, rawTarget, rawState, rawChannelId] = args;
@@ -72,19 +78,45 @@ export async function manageEternalReturnUsers(
       }
       const environment = options.environment ?? process.env;
       const config = readEternalReturnConfig(environment);
-      if (!config.erReceiptsEnabled) {
-        throw new Error("ER_ENABLED=true와 ER_RECEIPTS_ENABLED=true가 필요합니다.");
+      if (!config.erReceiptsEnabled || !config.erApiKey) {
+        throw new Error("ER_ENABLED=true, ER_RECEIPTS_ENABLED=true, ER_API_KEY가 필요합니다.");
       }
       const channelId = rawChannelId?.trim() || environment.ER_RECEIPT_CHANNEL_ID?.trim();
       if (!channelId || !/^\d{17,20}$/.test(channelId)) {
         throw new Error("게임 결과 알림을 켜려면 17~20자리 ER_RECEIPT_CHANNEL_ID가 필요합니다.");
       }
-      store.setReceiptSettings(user.userId, true, channelId);
-      return `${user.nickname} (${user.userId})의 게임 결과 알림을 켰습니다. 채널: ${channelId}`;
+      const refreshedUserId = await (options.refreshBeforeReceipt ?? refreshBeforeReceipt)(
+        user.nickname,
+        config.erApiKey,
+        store,
+      );
+      const refreshedUser = store.getUser(refreshedUserId);
+      if (!refreshedUser?.autoRefresh) {
+        throw new Error("최신 UID로 자동 수집 설정을 이전하지 못했습니다.");
+      }
+      store.setReceiptSettings(refreshedUser.userId, true, channelId);
+      store.initializeReceiptBaseline(
+        channelId,
+        store.findUsersByNickname(refreshedUser.nickname).map(candidate => candidate.userId),
+      );
+      return `${refreshedUser.nickname} (${refreshedUser.userId})의 게임 결과 알림을 켰습니다. 채널: ${channelId}`;
     }
     throw new Error(usage());
   } finally {
     store.close();
+  }
+}
+
+async function refreshBeforeReceipt(
+  nickname: string,
+  apiKey: string,
+  store: EternalReturnStore,
+): Promise<string> {
+  const collector = new EternalReturnCollector({ apiKey, store });
+  try {
+    return (await collector.refreshNickname(nickname, "interactive")).userId;
+  } finally {
+    await collector.shutdown();
   }
 }
 

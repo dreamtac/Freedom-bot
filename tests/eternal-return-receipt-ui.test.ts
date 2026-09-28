@@ -1,13 +1,17 @@
 import { MessageFlags, type ButtonInteraction, type StringSelectMenuInteraction } from "discord.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handleEternalReturnReceiptComponent } from "../src/commands/eternal-return-receipt-ui.js";
 import { buildReceiptPlayerView, buildReceiptView } from "../src/services/eternal-return-receipt.js";
 import { createEmptyReferenceData } from "../src/sources/eternal-return-reference.js";
 import type { StoredEternalReturnGame } from "../src/storage/eternal-return-store.js";
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("게임 결과 상세 컴포넌트", () => {
   it("유저별 선택을 분리하고 공개 메시지를 수정하지 않은 채 DB 스냅샷으로만 임시 응답한다", async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error("버튼에서 네트워크를 호출하면 안 됩니다."));
+    vi.stubGlobal("fetch", fetch);
     const view = teamView();
     const store = {
       getGameReceipt: vi.fn().mockReturnValue({ receiptId: "receipt", status: "sent" }),
@@ -32,6 +36,7 @@ describe("게임 결과 상세 컴포넌트", () => {
     expect(replyTitle(otherViewer)).toContain("홉빵맨");
     expect(otherViewer.reply).toHaveBeenCalledWith(expect.objectContaining({ flags: MessageFlags.Ephemeral }));
     expect(store.getGameReceiptDetails).toHaveBeenCalledTimes(3);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("DB에서 결과가 삭제된 버튼에는 만료 안내를 보낸다", async () => {

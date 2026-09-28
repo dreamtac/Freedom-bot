@@ -31,6 +31,7 @@ export interface ReceiptContributionView {
 }
 
 export interface ReceiptCreditView {
+  initialCredit?: number;
   totalGain?: number;
   totalUse?: number;
   balance?: number;
@@ -332,7 +333,6 @@ function buildCredits(game: StoredEternalReturnGame, references: EternalReturnRe
   const objectDetails = OBJECT_KEYS.flatMap(key => metric(key, objectLabel(key), source[key]));
   const objects = sum(objectDetails.map(item => item.value));
   const gain = [
-    metric("initial", "초기 지급", initial),
     metric("time", "시간 경과", time),
     metric("phase", "페이즈 보정", phase),
     metric("wild", "야생동물", wild),
@@ -385,7 +385,14 @@ function buildCredits(game: StoredEternalReturnGame, references: EternalReturnRe
     positiveOrZero(game.transferConsoleFromRevivalUseVFCredit),
     source.KioskResurrection ?? 0,
   );
-  const guideRobot = sumKeys(source, GUIDE_ROBOT_USE_KEYS);
+  const totalUse = nonNegative(game.totalUseVFCredit);
+  const classifiedUse = sum([material, remoteSelf, remoteAlly, tactical, rootkit, revival]);
+  const guideRobotSource = sumKeys(source, GUIDE_ROBOT_USE_KEYS);
+  // GuideRobotSignature/GuideRobotRadial can describe the same purchase already exposed by
+  // crUse* or kiosk fields. Use them only for the still-unclassified part of totalUse.
+  const guideRobot = totalUse === undefined
+    ? guideRobotSource
+    : Math.min(guideRobotSource, Math.max(0, totalUse - classifiedUse));
   const use = [
     metric("material", "재료 구매", material, materialPurchases),
     metric("remote-self", "원격 드론 구매(본인)", remoteSelf),
@@ -397,7 +404,6 @@ function buildCredits(game: StoredEternalReturnGame, references: EternalReturnRe
   ].flat();
 
   const totalGain = nonNegative(game.totalGainVFCredit);
-  const totalUse = nonNegative(game.totalUseVFCredit);
   addRemainder(gain, totalGain, "gain", "획득", errors);
   addRemainder(use, totalUse, "use", "사용", errors);
   const unknownSourceKeys = Object.entries(source)
@@ -407,6 +413,7 @@ function buildCredits(game: StoredEternalReturnGame, references: EternalReturnRe
   const droneItems = countItems(game.itemTransferredDrone, references);
   const discountCoupon = hasTrait(game, DISCOUNT_COUPON_TRAIT_CODE);
   return {
+    ...(initial > 0 ? { initialCredit: initial } : {}),
     ...(totalGain !== undefined ? { totalGain } : {}),
     ...(totalUse !== undefined ? { totalUse } : {}),
     ...(totalGain !== undefined && totalUse !== undefined ? { balance: totalGain - totalUse } : {}),
@@ -456,7 +463,7 @@ function buildActivity(game: StoredEternalReturnGame, references: EternalReturnR
     if (count > 0) lines.push(`${references.gadgetName(code)} ${format(count)}회`);
   }
   for (const [code, count] of Object.entries(numericRecord(game.activeInstallation))) {
-    if (count > 0) lines.push(`환경 변수 ${code} ${format(count)}회`);
+    if (count > 0) lines.push(`${references.installationName(code)} ${format(count)}회`);
   }
   const seasonActivities: Array<[unknown, string]> = [
     [game.gimmickAppleDropped, "사과 드롭"],
@@ -564,7 +571,7 @@ function addRemainder(
   if (total === undefined) return;
   const known = sum(metrics.map(item => item.value));
   const remainder = roundCredit(total - known);
-  if (remainder < -0.01) {
+  if (remainder < -1.01) {
     errors.push(`${label} 상세 합계 ${format(known)}가 총액 ${format(total)}보다 큽니다.`);
   } else if (remainder > 0.01) {
     metrics.push({ key: `${key}-unclassified`, label: "미분류", value: remainder });

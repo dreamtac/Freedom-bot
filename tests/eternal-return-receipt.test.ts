@@ -25,6 +25,7 @@ const references = {
   itemName: (code: unknown) => `아이템${code}`,
   areaName: (code: unknown) => `지역${code}`,
   traitName: (code: unknown) => `특성${code}`,
+  installationName: (code: unknown) => Number(code) === 1 ? "반딧불 꽃" : `설치물${code}`,
 };
 
 afterEach(async () => {
@@ -82,7 +83,7 @@ describe("Eternal Return receipt view model", () => {
     expect(view.credits.valid).toBe(true);
     expect(view.credits.gain.find(item => item.key === "wild")?.value).toBe(30);
     expect(view.credits.gain.find(item => item.key === "boss")?.value).toBe(18);
-    expect(view.credits.gain.find(item => item.key === "gain-unclassified")?.value).toBe(22);
+    expect(view.credits.gain.find(item => item.key === "gain-unclassified")?.value).toBe(122);
     expect(view.credits.use.find(item => item.key === "material")?.value).toBe(510);
     expect(view.credits.use.find(item => item.key === "tactical")?.value).toBe(180);
     expect(view.credits.use.find(item => item.key === "use-unclassified")?.value).toBe(5);
@@ -104,6 +105,107 @@ describe("Eternal Return receipt view model", () => {
     expect(receipt.valid).toBe(false);
     expect(receipt.errors[0]).toContain("총액");
     expect(() => buildReceiptSummaryEmbed(receipt)).toThrow("정합성");
+  });
+
+  it("GuideRobot 사용값이 재료 구매와 겹치면 중복 집계하지 않는다", () => {
+    const player = buildReceiptPlayerView({
+      userId: "uid", nickname: "테스터",
+      game: storedGame({
+        totalUseVFCredit: 320,
+        crUseForceCore: 310,
+        remoteDroneUseVFCreditMySelf: 10,
+        creditSource: {
+          GuideRobotSignature: 310,
+          KioskRemoteDroneMySelf: 10,
+        },
+      }),
+    }, references);
+
+    expect(player.credits.valid).toBe(true);
+    expect(player.credits.use.find(item => item.key === "material")?.value).toBe(310);
+    expect(player.credits.use.find(item => item.key === "remote-self")?.value).toBe(10);
+    expect(player.credits.use.find(item => item.key === "guide-robot")).toBeUndefined();
+    expect(player.credits.use.find(item => item.key === "use-unclassified")).toBeUndefined();
+  });
+
+  it("GuideRobot 사용값 중 다른 필드로 설명되지 않은 잔액만 표시한다", () => {
+    const player = buildReceiptPlayerView({
+      userId: "uid", nickname: "테스터",
+      game: storedGame({
+        totalUseVFCredit: 315,
+        crUseForceCore: 310,
+        creditSource: { GuideRobotSignature: 310, GuideRobotRadial: 5 },
+      }),
+    }, references);
+
+    expect(player.credits.valid).toBe(true);
+    expect(player.credits.use.find(item => item.key === "material")?.value).toBe(310);
+    expect(player.credits.use.find(item => item.key === "guide-robot")?.value).toBe(5);
+  });
+
+  it("PreliminaryPhase는 총 획득 밖의 초기 보유로 분리하고 1크레딧 API 반올림 차이를 허용한다", () => {
+    const exact = buildReceiptPlayerView({
+      userId: "uid", nickname: "테스터",
+      game: storedGame({
+        totalGainVFCredit: 367,
+        creditSource: {
+          PreliminaryPhase: 15,
+          TimeElapsedCompensationByMiliSecond: 231,
+          KillPlayerMerge: 20,
+          KillAssistDivideContribute: 28,
+          KillAttackDrone: 9,
+          GoldSecurityConsoleAccess: 5,
+          KillChicken: 7,
+          KillBat: 6,
+          KillBoar: 2,
+          KillWildDog: 11,
+          KillWolf: 6,
+          KillBear: 10,
+          KillRaven: 6,
+          KillMutantChicken: 3,
+          KillMutantBoar: 7,
+          KillMutantWildDog: 10,
+          KillMutantWolf: 6,
+        },
+      }),
+    }, references);
+    expect(exact.credits.initialCredit).toBe(15);
+    expect(exact.credits.gain.some(metric => metric.key === "initial")).toBe(false);
+    expect(exact.credits.valid).toBe(true);
+
+    const rounded = buildReceiptPlayerView({
+      userId: "uid", nickname: "테스터",
+      game: storedGame({
+        totalGainVFCredit: 864,
+        creditSource: {
+          PreliminaryPhase: 15,
+          TimeElapsedCompensationByMiliSecond: 520,
+          TimeElapsedCreditBonusByMiliSecond: 12.00001,
+          KillPlayerMerge: 70,
+          KillAssistDivideContribute: 24,
+          ItemBounty: 45,
+          AcquireLumiCredit: 11,
+          GoldSecurityConsoleAccess: 5,
+          KillCamera: 7,
+          KillChicken: 20,
+          KillBat: 7,
+          KillBoar: 6,
+          KillWildDog: 8,
+          KillWolf: 32,
+          KillBear: 31,
+          KillRaven: 8,
+          KillMutantChicken: 9,
+          KillMutantBat: 2,
+          KillMutantBoar: 8,
+          KillMutantWildDog: 2,
+          KillMutantWolf: 18,
+          KillMutantBear: 10,
+          KillMutantRaven: 10,
+        },
+      }),
+    }, references);
+    expect(rounded.credits.valid).toBe(true);
+    expect(rounded.credits.errors).toEqual([]);
   });
 
   it("공개 결과에는 짧은 receiptId 기반 상세 버튼과 팀 유저 선택 메뉴만 넣는다", () => {
@@ -141,6 +243,7 @@ describe("Eternal Return receipt view model", () => {
         useHyperLoop: 3,
         damageToGuideRobot: 1_234,
         useGadget: { 8300101: 2 },
+        activeInstallation: { 1: 4 },
         getBoriReward: { Gold: 1, Purple: 2 },
       }),
     }, references);
@@ -153,11 +256,12 @@ describe("Eternal Return receipt view model", () => {
       expect.objectContaining({ key: "security", value: 2 }),
     ]));
     expect(player.activity.lines).toEqual(expect.arrayContaining([
-      expect.stringContaining("전술 스킬 30 4회"),
+      expect.stringContaining("블링크 4회"),
       "하이퍼루프 3회",
       "LUMI에게 가한 피해 1,234",
       "보리 보상 상자 3개",
       "키오스크 호출기 2회",
+      "반딧불 꽃 4회",
     ]));
     expect(buildReceiptDetailEmbed(player, "contribution").toJSON().description).not.toContain("9,999");
   });
@@ -184,6 +288,64 @@ describe("Eternal Return receipt view model", () => {
     expect(description).toContain("추천 4,732회(조회 시점)");
     expect(description).toContain("Q → W → E → Q");
     expect(description).not.toContain("q → e → w");
+  });
+
+  it("API 스킬 그룹 코드를 Q/W/E/R/T와 무기 스킬 D로 표시한다", () => {
+    const player = buildReceiptPlayerView({
+      userId: "uid", nickname: "홉빵맨",
+      game: storedGame({
+        skillOrderInfo: {
+          1: 1_003_400,
+          2: 1_003_200,
+          3: 1_003_300,
+          4: 3_016_000,
+          5: 1_003_100,
+          6: 1_003_500,
+        },
+      }),
+    }, {
+      ...references,
+      skillName: code => {
+        const numericCode = Number(code);
+        const index = Math.floor((numericCode % 1_000) / 100);
+        if (numericCode >= 3_000_000 && numericCode < 4_000_000) return "D";
+        return ({ 1: "T", 2: "Q", 3: "W", 4: "E", 5: "R" } as Record<number, string>)[index]
+          ?? String(code);
+      },
+    });
+
+    expect(player.build.skillOrder).toEqual(["E", "Q", "W", "D", "T", "R"]);
+  });
+
+  it("기존 상세 스냅샷의 숫자 스킬 코드도 버튼 표시 시 변환한다", () => {
+    const player = buildReceiptPlayerView({
+      userId: "uid", nickname: "홉빵맨", game: storedGame(),
+    }, references);
+    const legacyPlayer = {
+      ...player,
+      build: {
+        ...player.build,
+        skillOrder: ["1003400", "1003200", "1003300", "3016000", "1003100", "1003500"],
+      },
+    };
+
+    const description = buildReceiptDetailEmbed(legacyPlayer, "build").toJSON().description ?? "";
+    expect(description).toContain("1~6: E → Q → W → D → T → R");
+    expect(description).not.toContain("1003400");
+  });
+
+  it("기존 활동 스냅샷의 전술 스킬 그룹 코드도 이름으로 변환한다", () => {
+    const player = buildReceiptPlayerView({
+      userId: "uid", nickname: "홍어심슨", game: storedGame(),
+    }, references);
+    const legacyPlayer = {
+      ...player,
+      activity: { lines: ["전술 스킬 500270 7회", "하이퍼루프 1회"] },
+    };
+
+    const description = buildReceiptDetailEmbed(legacyPlayer, "activity").toJSON().description ?? "";
+    expect(description).toContain("• 쇠약 7회");
+    expect(description).not.toContain("500270");
   });
 
   it("세 등록 유저를 gameId와 팀 번호로 묶고 모바일용 Embed 제한을 지킨다", () => {

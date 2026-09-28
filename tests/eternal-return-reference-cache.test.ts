@@ -33,7 +33,15 @@ it("공통 자료를 최초 8 API 호출로 저장하고 재시작 뒤 SQLite에
     const url = String(input);
     urls.push(url);
     if (url === "https://example.test/ko.txt") {
-      return new Response("Character/Name/1┃재키");
+      return new Response([
+        "Character/Name/1┃재키",
+        "Installation/Name/1┃반딧불 꽃",
+        "Skill/Group/Name/1003200┃팡뜨",
+        "Skill/Group/Name/3016000┃빗겨 흘리기",
+        "Skill/Group/Name/999┃알 수 없는 스킬",
+        "TacticalSkillSet/Code/Name/500121┃블링크",
+        "TacticalSkillSet/Code/Name/500271┃쇠약",
+      ].join("\n"));
     }
     if (url.endsWith("/v1/l10n/Korean")) {
       return json({ code: 200, data: { l10Path: "https://example.test/ko.txt" } });
@@ -46,6 +54,13 @@ it("공통 자료를 최초 8 API 호출로 저장하고 재시작 뒤 SQLite에
   const first = await EternalReturnStore.open(path);
   const references = await getReferenceData("stored-cache-key", {}, first);
   expect(references.characterName(1)).toBe("재키");
+  expect(references.installationName(1)).toBe("반딧불 꽃");
+  expect(references.skillName(1003200)).toBe("Q");
+  expect(references.skillName(1003210)).toBe("Q");
+  expect(references.skillName(3016000)).toBe("D");
+  expect(references.skillName(999)).toBe("알 수 없는 스킬");
+  expect(references.tacticalSkillName(30)).toBe("블링크");
+  expect(references.tacticalSkillName(500270)).toBe("쇠약");
   expect(urls.filter(url => url.includes("open-api.bser.io"))).toHaveLength(8);
   expect(urls).toHaveLength(9);
   first.close();
@@ -54,6 +69,10 @@ it("공통 자료를 최초 8 API 호출로 저장하고 재시작 뒤 SQLite에
   const reopened = await EternalReturnStore.open(path);
   const cached = await getReferenceData("stored-cache-key", {}, reopened);
   expect(cached.characterName(1)).toBe("재키");
+  expect(cached.installationName(1)).toBe("반딧불 꽃");
+  expect(cached.skillName(1003200)).toBe("Q");
+  expect(cached.skillName(3016000)).toBe("D");
+  expect(cached.tacticalSkillName(500270)).toBe("쇠약");
   expect(global.fetch).not.toHaveBeenCalled();
   reopened.close();
 });

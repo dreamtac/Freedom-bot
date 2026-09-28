@@ -12,6 +12,7 @@ export interface EternalReturnReferences {
   traitName(code: unknown): string;
   tacticalSkillName(code: unknown): string;
   gadgetName(code: unknown): string;
+  installationName(code: unknown): string;
   skillName(code: unknown): string;
 }
 
@@ -81,6 +82,44 @@ const GADGET_NAMES: Readonly<Record<number, string>> = {
   8_310_301: "휴대용 안전지대",
   8_310_501: "CNOT 게이트",
 };
+
+const LEGACY_TACTICAL_SKILL_SET_CODES: Readonly<Record<number, number>> = {
+  30: 500121,
+  40: 500131,
+  50: 500141,
+  60: 500151,
+  70: 500161,
+  80: 500171,
+  90: 500181,
+  110: 500191,
+  120: 500201,
+  130: 500211,
+  150: 500231,
+  160: 500251,
+  170: 500261,
+  190: 500281,
+};
+
+const TACTICAL_SKILL_NAMES: Readonly<Record<number, string>> = {
+  30: "블링크", 40: "퀘이크", 50: "프로토콜 위반", 60: "붉은 폭풍",
+  70: "초월", 80: "아티팩트", 90: "무효화", 110: "강한 결속",
+  120: "스트라이더 - A13", 130: "진실의 칼날", 150: "치유의 바람",
+  160: "리펄서 미사일", 170: "플라즈마 대시", 190: "라이트 윙",
+  500010: "블레싱: 명상", 500020: "중력장", 500030: "롤링썬더", 500040: "폭진",
+  500050: "블링크", 500060: "기원", 500070: "대지분쇄", 500080: "힘껏 펀치",
+  500090: "메테오", 500100: "라이트닝 쉴드", 500110: "블레싱: 명상",
+  500120: "블링크", 500130: "퀘이크", 500140: "프로토콜 위반",
+  500150: "붉은 폭풍", 500160: "초월", 500170: "아티팩트", 500180: "무효화",
+  500190: "강한 결속", 500200: "스트라이더 - A13", 500210: "진실의 칼날",
+  500220: "거짓 서약", 500230: "치유의 바람", 500240: "부착",
+  500250: "리펄서 미사일", 500260: "플라즈마 대시", 500270: "쇠약",
+  500280: "라이트 윙",
+};
+
+export function tacticalSkillFallbackName(code: unknown): string | undefined {
+  const numericCode = Number(code);
+  return Number.isSafeInteger(numericCode) ? TACTICAL_SKILL_NAMES[numericCode] : undefined;
+}
 
 function parseL10n(text: string) {
   const map = new Map<string, string>();
@@ -219,9 +258,16 @@ function createReferenceData({ characters, items, areas, traits, l10n }: Referen
 
     tacticalSkillName(code) {
       const numericCode = Number(code);
-      return l10nName(`TacticalSkill/Name/${numericCode}`)
+      const setCode = LEGACY_TACTICAL_SKILL_SET_CODES[numericCode]
+        ?? (numericCode >= 500_000 && numericCode < 600_000 ? numericCode + 1 : undefined);
+      const localized = (setCode !== undefined
+        ? l10nName(`TacticalSkillSet/Code/Name/${setCode}`)
+        : null)
+        || l10nName(`TacticalSkill/Name/${numericCode}`)
         || l10nName(`TacticalSkillGroup/Name/${numericCode}`)
-        || l10nName(`Skill/Name/${numericCode}`)
+        || l10nName(`Skill/Name/${numericCode}`);
+      return localized?.replace(/<[^>]+>/g, "")
+        || tacticalSkillFallbackName(numericCode)
         || `전술 스킬 ${fallback(code)}`;
     },
 
@@ -233,11 +279,29 @@ function createReferenceData({ characters, items, areas, traits, l10n }: Referen
         || `가젯 ${fallback(code)}`;
     },
 
+    installationName(code) {
+      const numericCode = Number(code);
+      return l10nName(`Installation/Name/${numericCode}`) || `설치물 ${fallback(code)}`;
+    },
+
     skillName(code) {
       const normalized = String(code).trim().toUpperCase();
       if (["Q", "W", "E", "R", "T", "D", "F"].includes(normalized)) return normalized;
       const numericCode = Number(code);
-      return l10nName(`Skill/Name/${numericCode}`) || fallback(code);
+      if (Number.isSafeInteger(numericCode)) {
+        // Character skill group codes end in 1xx~5xx. Variant skills keep the same
+        // hundreds digit (for example 210), so they still map to the same slot.
+        const skillIndex = Math.floor((numericCode % 1_000) / 100);
+        const characterSlot = ({ 1: "T", 2: "Q", 3: "W", 4: "E", 5: "R" } as const)
+          [skillIndex as 1 | 2 | 3 | 4 | 5];
+        if (numericCode >= 1_000_000 && numericCode < 2_000_000 && characterSlot) {
+          return characterSlot;
+        }
+        if (numericCode >= 3_000_000 && numericCode < 4_000_000) return "D";
+      }
+      return l10nName(`Skill/Group/Name/${numericCode}`)
+        || l10nName(`Skill/Name/${numericCode}`)
+        || fallback(code);
     },
   };
 }

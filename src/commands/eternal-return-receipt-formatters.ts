@@ -12,6 +12,7 @@ import type {
   EternalReturnReceiptView,
   ReceiptMetric,
 } from "../services/eternal-return-receipt.js";
+import { tacticalSkillFallbackName } from "../sources/eternal-return-reference.js";
 
 export type EternalReturnReceiptSection = "combat" | "contribution" | "credits" | "activity" | "build";
 
@@ -174,6 +175,7 @@ function creditBody(player: EternalReturnReceiptPlayerView): string {
   const credits = player.credits;
   if (!credits.valid) return `정합성 오류로 표시할 수 없습니다.\n${credits.errors.join("\n")}`;
   const lines = [
+    credits.initialCredit !== undefined ? `초기 보유  ${number(credits.initialCredit)} (총 획득 외)` : "",
     credits.totalGain !== undefined ? `**총 획득  ${number(credits.totalGain)}**` : "**획득 상세**",
     ...nestedMetricLines(credits.gain),
     "",
@@ -195,8 +197,13 @@ function creditBody(player: EternalReturnReceiptPlayerView): string {
 
 function activityBody(player: EternalReturnReceiptPlayerView): string {
   return player.activity.lines.length > 0
-    ? player.activity.lines.map(line => `• ${line}`).join("\n")
+    ? player.activity.lines.map(line => `• ${displayActivityLine(line)}`).join("\n")
     : "기록된 특별 행동이 없습니다.";
+}
+
+function displayActivityLine(line: string): string {
+  return line.replace(/^전술 스킬 (\d+)(?=\s)/, (matched, code: string) =>
+    tacticalSkillFallbackName(code) ?? matched);
 }
 
 function buildBody(player: EternalReturnReceiptPlayerView): string {
@@ -205,7 +212,10 @@ function buildBody(player: EternalReturnReceiptPlayerView): string {
   const route = game.routeIdOfStart !== undefined
     ? `루트 ${game.routeIdOfStart}${build.route?.title ? ` · ${build.route.title}` : ""}` : "";
   const likes = build.route?.likes !== undefined ? `추천 ${number(build.route.likes)}회(조회 시점)` : "";
-  const skillChunks = chunk(build.skillOrder, 10).map((items, index) =>
+  // Older receipt snapshots may contain raw numeric skill group codes. Normalize
+  // them while rendering so already-sent Discord messages also become readable.
+  const displayedSkillOrder = build.skillOrder.map(displaySkillSlot);
+  const skillChunks = chunk(displayedSkillOrder, 10).map((items, index) =>
     `${index * 10 + 1}~${index * 10 + items.length}: ${items.join(" → ")}`);
   return compact([
     `실험체 ${player.characterName}${game.characterLevel !== undefined ? ` · 레벨 ${number(game.characterLevel)}` : ""}`,
@@ -223,6 +233,16 @@ function buildBody(player: EternalReturnReceiptPlayerView): string {
     skillChunks.length > 0 ? "\n**스킬 레벨업 순서**" : "",
     ...skillChunks,
   ], "기록된 빌드 상세가 없습니다.");
+}
+
+function displaySkillSlot(value: string): string {
+  const numericCode = Number(value);
+  if (!Number.isSafeInteger(numericCode)) return value;
+  if (numericCode >= 3_000_000 && numericCode < 4_000_000) return "D";
+  if (numericCode < 1_000_000 || numericCode >= 2_000_000) return value;
+  const skillIndex = Math.floor((numericCode % 1_000) / 100);
+  return ({ 1: "T", 2: "Q", 3: "W", 4: "E", 5: "R" } as Record<number, string>)[skillIndex]
+    ?? value;
 }
 
 function nestedMetricLines(metrics: readonly ReceiptMetric[]): string[] {
